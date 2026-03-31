@@ -1,454 +1,816 @@
-# 📦 Cache — Giải thích từ cơ bản đến chuyên sâu
+# 🔴 Redis — Giải thích từ cơ bản đến chuyên sâu
 
-> **Cache** là nơi lưu trữ tạm thời dữ liệu nhằm giúp những lần truy cập sau **nhanh hơn đáng kể**, bằng cách tránh phải tính toán hoặc truy xuất lại từ nguồn gốc.
-
----
-
-## 1. Cache là gì?
-
-Hãy tưởng tượng bạn đang tra cứu một định nghĩa trong từ điển:
-
-- **Lần đầu**: Bạn lật sách, tìm trang → mất 30 giây
-- **Lần sau**: Bạn còn nhớ → gần như ngay lập tức
-
-👉 "Nhớ lại" chính là cache trong não bạn — lưu kết quả để không phải tìm lại từ đầu.
-
-Trong phần mềm, ý tưởng hoàn toàn tương tự: **thay vì tính lại hoặc truy vấn lại**, ta lưu kết quả cũ ở chỗ nào đó nhanh hơn để dùng lại.
+> **Redis** (Remote Dictionary Server) là một **in-memory data store** mã nguồn mở, được dùng phổ biến làm cache, message broker, và database. Dữ liệu được lưu trong RAM nên tốc độ cực nhanh.
 
 ---
 
-## 2. Vấn đề cache giải quyết
+## 1. Redis là gì và tại sao nó quan trọng?
 
-### Không có cache
+Redis không chỉ là một cache layer đơn thuần. Nó là một **data structure server** — nghĩa là nó không chỉ lưu key-value dạng string mà hỗ trợ nhiều kiểu dữ liệu phức tạp như list, set, hash, sorted set, stream...
 
-Mỗi request đều phải:
+### Redis trong thực tế được dùng để làm gì?
 
-1. Kết nối database
-2. Thực thi query (có thể phức tạp, JOIN nhiều bảng)
-3. Database đọc dữ liệu từ **disk** (rất chậm)
-4. Trả kết quả về
-
-**Hệ quả:**
-- Response chậm (hàng trăm ms mỗi request)
-- Database bị quá tải khi nhiều user
-- Hệ thống dễ sập khi traffic đột biến
-
-### Có cache
-
-1. Request đến → kiểm tra cache trước
-2. Nếu có → trả về **ngay lập tức từ RAM**
-3. Nếu không có → mới gọi DB, rồi lưu lại vào cache
-
-**Hệ quả:**
-- Response nhanh hơn 10–100x
-- Giảm tải đáng kể cho database
-- Hệ thống scale tốt hơn nhiều
-
----
-
-## 3. Bản chất của cache: Trade-off
-
-Cache là một **sự đánh đổi có chủ đích**:
-
-| Bỏ ra | Đổi lấy |
+| Use case | Ví dụ cụ thể |
 |---|---|
-| RAM (đắt, giới hạn) | Tốc độ cực nhanh |
-| Độ phức tạp hệ thống | Hiệu năng cao hơn |
-| Tính nhất quán tuyệt đối | Khả năng phục vụ nhiều user hơn |
+| **Cache** | Cache kết quả query DB, cache HTML page |
+| **Session store** | Lưu session user cho web app |
+| **Rate limiting** | Giới hạn số request mỗi IP |
+| **Leaderboard** | Bảng xếp hạng game real-time |
+| **Job queue** | Hàng đợi tác vụ background |
+| **Pub/Sub** | Hệ thống chat, notification real-time |
+| **Distributed lock** | Tránh race condition giữa nhiều server |
+| **Counting** | Đếm số lượt view, like, click |
 
-**Tại sao RAM nhanh hơn Disk?**
+---
 
-| Loại bộ nhớ | Tốc độ đọc điển hình | So sánh |
+## 2. Tại sao Redis nhanh?
+
+Redis nhanh không chỉ vì dùng RAM. Có nhiều lý do cộng hưởng:
+
+### 2.1 In-Memory
+
+Dữ liệu hoàn toàn trong RAM → không có I/O disk trong đường hot path.
+
+```
+Redis: RAM  → ~microseconds
+MySQL: Disk → ~milliseconds
+```
+
+### 2.2 Single-threaded (cho command execution)
+
+Redis xử lý commands trên **một thread duy nhất** (core commands). Điều này:
+- Tránh hoàn toàn **race condition** và **context switching**
+- Mỗi command là **atomic** — không cần lock
+- CPU cache locality tốt hơn
+
+> Lưu ý: Redis 6.0+ thêm **I/O threads** để xử lý network, nhưng command execution vẫn single-threaded.
+
+### 2.3 Non-blocking I/O (Event loop)
+
+Redis dùng **multiplexed I/O** (epoll/kqueue) để xử lý hàng nghìn kết nối đồng thời mà không tạo thread riêng cho mỗi connection.
+
+### 2.4 Efficient data structures
+
+Các cấu trúc dữ liệu được tối ưu ở tầng C — ziplist, skiplist, intset — chọn encoding phù hợp tự động dựa trên kích thước dữ liệu.
+
+**Kết quả thực tế:**
+- **100,000+ operations/giây** trên hardware thông thường
+- Latency thường **< 1ms**
+
+---
+
+## 3. Các kiểu dữ liệu trong Redis
+
+Đây là phần quan trọng nhất cần nắm. Mỗi kiểu dữ liệu giải quyết một bài toán khác nhau.
+
+---
+
+### 3.1 String
+
+Kiểu dữ liệu cơ bản nhất. Lưu text, số, hoặc binary data (tối đa 512MB).
+
+```bash
+SET user:123:name "Nguyen Van A"
+GET user:123:name
+# → "Nguyen Van A"
+
+# Lưu số và tăng/giảm atomic
+SET page:views 100
+INCR page:views       # → 101
+INCRBY page:views 10  # → 111
+DECR page:views       # → 110
+
+# Set với TTL
+SET session:abc "token_xyz" EX 3600   # hết hạn sau 1 giờ
+SET session:abc "token_xyz" PX 60000  # hết hạn sau 60,000ms
+
+# Set chỉ khi chưa tồn tại (dùng cho distributed lock)
+SET lock:resource "owner_id" NX EX 30
+```
+
+**Dùng khi:** Cache đơn giản, counter, session token, flag, config value.
+
+---
+
+### 3.2 Hash
+
+Lưu **object dạng field-value**, tương tự row trong database hay dict trong Python.
+
+```bash
+HSET user:123 name "Nguyen Van A" age 25 email "a@gmail.com"
+HGET user:123 name          # → "Nguyen Van A"
+HGETALL user:123            # → tất cả fields
+HMGET user:123 name email   # → lấy nhiều fields
+HINCRBY user:123 age 1      # → tăng age lên 1
+HDEL user:123 email         # → xóa field
+HEXISTS user:123 name       # → 1 (có tồn tại)
+```
+
+**Tại sao dùng Hash thay vì JSON string?**
+
+| | Hash | JSON String |
 |---|---|---|
-| CPU L1 Cache | ~1 ns | Cực nhanh |
-| RAM | ~100 ns | Nhanh |
-| SSD (NVMe) | ~100 µs | Chậm hơn RAM ~1000x |
-| HDD | ~10 ms | Rất chậm |
+| Lấy 1 field | `HGET` — O(1) | Phải lấy toàn bộ rồi parse |
+| Update 1 field | `HSET` — không ảnh hưởng field khác | Phải đọc → parse → modify → serialize → ghi lại |
+| Bộ nhớ | Tối ưu hơn (ziplist khi nhỏ) | Tốn hơn |
 
-👉 Đó là lý do cache thường được lưu trong RAM.
-
----
-
-## 4. Cache hoạt động như thế nào?
-
-### Flow cơ bản
-
-```
-Client → Server → [Check Cache]
-                       |
-              ┌────────┴────────┐
-           Cache HIT         Cache MISS
-              |                   |
-         Trả về ngay         Gọi DB
-         từ cache            → Lưu vào cache
-                             → Trả về client
-```
-
-### Cache Hit vs Cache Miss
-
-| | Cache Hit ✅ | Cache Miss ❌ |
-|---|---|---|
-| Dữ liệu | Có sẵn trong cache | Không có |
-| Tốc độ | Rất nhanh (~µs) | Chậm hơn (~ms) |
-| Nguồn dữ liệu | RAM | Database / API |
-
-**Hit Rate** = Tỷ lệ request tìm thấy dữ liệu trong cache
-
-> Mục tiêu: **tối đa hóa hit rate** — thường target từ 80–99% tùy hệ thống.
+**Dùng khi:** Cache user profile, product info, bất kỳ object nào cần update từng phần.
 
 ---
 
-## 5. Tại sao cache hoạt động hiệu quả? — Locality
+### 3.3 List
 
-Cache khai thác một đặc điểm tự nhiên của hành vi truy cập dữ liệu:
+Danh sách có thứ tự, cho phép thêm/xóa ở **cả hai đầu** — O(1). Thích hợp làm **queue** hoặc **stack**.
 
-### Temporal Locality (Cục bộ theo thời gian)
+```bash
+# Thêm vào đầu (left) hoặc cuối (right)
+LPUSH notifications:user:123 "You have a new message"
+RPUSH notifications:user:123 "Your order has shipped"
 
-> Dữ liệu vừa được truy cập có **khả năng cao** sẽ được truy cập lại trong thời gian ngắn.
+# Lấy theo index range
+LRANGE notifications:user:123 0 -1   # tất cả
+LRANGE notifications:user:123 0 9    # 10 phần tử đầu
 
-Ví dụ: Trang chủ của một website, thông tin sản phẩm nổi bật.
+# Pop (blocking — dùng cho queue)
+LPOP notifications:user:123           # lấy từ đầu
+RPOP notifications:user:123           # lấy từ cuối
+BLPOP queue:jobs 30                   # blocking pop, chờ tối đa 30s
 
-### Spatial Locality (Cục bộ theo không gian)
+# Trim — giữ chỉ N phần tử mới nhất
+LTRIM activity:user:123 0 99          # giữ 100 phần tử gần nhất
+```
 
-> Dữ liệu gần nhau về mặt địa chỉ thường được truy cập cùng nhau.
-
-Ví dụ: Đọc một record → thường cũng cần các field liên quan ngay bên cạnh.
-
-> ⚠️ Nếu dữ liệu hoàn toàn ngẫu nhiên, không có pattern → cache gần như vô dụng.
+**Dùng khi:** Activity feed, recent items, job queue, undo history, chat message buffer.
 
 ---
 
-## 6. Các khái niệm cốt lõi
+### 3.4 Set
 
-### 6.1 TTL (Time To Live)
+Tập hợp **không có thứ tự, không trùng lặp**. Hỗ trợ các phép toán tập hợp.
 
-Thời gian sống của một entry trong cache. Sau khi hết TTL, entry bị xóa và phải load lại từ nguồn.
+```bash
+SADD tags:post:1 "redis" "database" "cache"
+SADD tags:post:2 "redis" "nosql" "performance"
 
+SMEMBERS tags:post:1         # → {"redis", "database", "cache"}
+SISMEMBER tags:post:1 "redis" # → 1 (có trong set)
+SCARD tags:post:1            # → 3 (số phần tử)
+
+# Phép toán tập hợp
+SINTER tags:post:1 tags:post:2   # → {"redis"} (giao)
+SUNION tags:post:1 tags:post:2   # → tất cả tags (hợp)
+SDIFF  tags:post:1 tags:post:2   # → {"database", "cache"} (hiệu)
+
+# Xóa ngẫu nhiên (dùng cho lucky draw)
+SPOP lucky:draw 1
 ```
-User A  ──→ Cache [user:123, TTL=5min] ──→ DB
-              ↑                              |
-              └──────────────────────────────┘
-                     5 phút sau → xóa
+
+**Dùng khi:** Tags, unique visitors, friend list, blacklist/whitelist, lottery.
+
+---
+
+### 3.5 Sorted Set (ZSet) ⭐
+
+Set nhưng **mỗi phần tử có một score** (số thực). Phần tử được sắp xếp theo score. Đây là cấu trúc dữ liệu độc đáo và mạnh mẽ nhất của Redis.
+
+```bash
+# Thêm với score
+ZADD leaderboard 9500 "player:alice"
+ZADD leaderboard 8200 "player:bob"
+ZADD leaderboard 9800 "player:charlie"
+
+# Lấy theo rank (0-indexed, tăng dần)
+ZRANGE leaderboard 0 -1 WITHSCORES     # tất cả, score thấp → cao
+ZREVRANGE leaderboard 0 9 WITHSCORES  # top 10, score cao → thấp
+
+# Rank của một player (0-indexed)
+ZREVRANK leaderboard "player:alice"   # → 1 (hạng 2, charlie đứng đầu)
+
+# Tăng score
+ZINCRBY leaderboard 300 "player:bob"  # bob: 8200 → 8500
+
+# Lấy theo khoảng score
+ZRANGEBYSCORE leaderboard 8000 9000 WITHSCORES
+
+# Số phần tử
+ZCARD leaderboard   # → 3
 ```
 
-**Chọn TTL như thế nào?**
+**Implementation nội bộ:** Redis dùng **Skip List** — cho phép O(log N) với mọi thao tác.
 
-| Loại dữ liệu | TTL gợi ý |
+**Dùng khi:** Leaderboard, priority queue, time-series events (dùng timestamp làm score), rate limiting.
+
+---
+
+### 3.6 Bitmap
+
+Không phải kiểu riêng biệt mà là cách dùng String như một mảng bit. Cực kỳ tiết kiệm bộ nhớ.
+
+```bash
+# Đánh dấu user đã login vào ngày thứ N trong năm
+SETBIT user:123:login:2024 180 1   # ngày 180 đã login
+GETBIT user:123:login:2024 180     # → 1
+
+# Đếm số ngày đã login trong năm
+BITCOUNT user:123:login:2024       # → số bit = 1
+
+# Bitwise operations (ví dụ: ai online cả tháng 1 và tháng 2)
+BITOP AND result online:jan online:feb
+```
+
+**Bộ nhớ:** 1 bit/user → 1 triệu user chỉ tốn **125KB**.
+
+**Dùng khi:** Daily active users, feature flags per user, attendance tracking.
+
+---
+
+### 3.7 HyperLogLog
+
+Cấu trúc probabilistic để **đếm unique items** với sai số ~0.81%, nhưng chỉ tốn **12KB** bất kể có bao nhiêu phần tử.
+
+```bash
+PFADD uv:page:home "user:1" "user:2" "user:3"
+PFADD uv:page:home "user:1"   # trùng → không tính thêm
+
+PFCOUNT uv:page:home   # → ≈ 3 (xấp xỉ)
+
+# Merge nhiều HLL
+PFMERGE uv:all uv:page:home uv:page:about
+```
+
+**Dùng khi:** Đếm unique visitors khi không cần chính xác tuyệt đối, trending topics.
+
+---
+
+### 3.8 Stream
+
+Append-only log, tương tự Kafka nhưng nhẹ hơn. Dùng cho event sourcing và message queue có persistence.
+
+```bash
+# Thêm event (ID tự động = timestamp-sequence)
+XADD events:orders * user_id 123 product_id 456 action "purchase"
+
+# Đọc từ đầu
+XRANGE events:orders - +
+
+# Consumer group (nhiều consumer cùng xử lý)
+XGROUP CREATE events:orders workers $ MKSTREAM
+XREADGROUP GROUP workers consumer1 COUNT 10 STREAMS events:orders >
+```
+
+**Dùng khi:** Audit log, event sourcing, lightweight message queue.
+
+---
+
+### Tóm tắt chọn kiểu dữ liệu
+
+| Bài toán | Kiểu dữ liệu |
 |---|---|
-| Cấu hình hệ thống | 1 giờ – 24 giờ |
-| Thông tin sản phẩm | 5 – 30 phút |
-| Session user | 15 – 60 phút |
-| Kết quả tìm kiếm | 1 – 5 phút |
-| Giá cổ phiếu / tỷ giá | Không nên cache hoặc TTL rất ngắn |
-
-### 6.2 Eviction Policy (Chiến lược xóa khi đầy)
-
-Cache có dung lượng giới hạn. Khi đầy, phải quyết định xóa entry nào.
-
-| Chiến lược | Cơ chế | Dùng khi nào |
-|---|---|---|
-| **LRU** (Least Recently Used) | Xóa entry lâu nhất chưa dùng | Phổ biến nhất, phù hợp hầu hết |
-| **LFU** (Least Frequently Used) | Xóa entry ít được truy cập nhất | Khi cần ưu tiên theo tần suất |
-| **FIFO** | Xóa entry vào trước nhất | Đơn giản, ít dùng trong production |
-| **TTL-based** | Xóa khi hết hạn, không cần đầy | Kết hợp với các chiến lược trên |
-| **Random** | Xóa ngẫu nhiên | Đơn giản, hiệu quả không cao |
-
-### 6.3 Cache Invalidation (Xóa cache chủ động)
-
-Khi dữ liệu nguồn thay đổi, cache phải được cập nhật hoặc xóa.
-
-Đây là bài toán khó nhất trong caching:
-
-> *"There are only two hard things in Computer Science: cache invalidation and naming things."*
-> — Phil Karlton
-
-**Các cách invalidate cache:**
-
-- **Xóa trực tiếp**: Khi update DB, xóa luôn key cache liên quan
-- **TTL tự nhiên**: Để cache tự hết hạn
-- **Event-driven**: Dùng message queue để notify khi data thay đổi
-- **Versioned keys**: Đổi tên key mỗi khi update (`user:123:v2`)
+| Cache đơn giản, counter | String |
+| Lưu object, update từng field | Hash |
+| Queue, stack, recent items | List |
+| Unique members, intersection | Set |
+| Leaderboard, ranking | Sorted Set |
+| Đếm unique users tiết kiệm RAM | HyperLogLog |
+| Feature flag per user, daily active | Bitmap |
+| Event log, message queue | Stream |
 
 ---
 
-## 7. Cache Patterns
+## 4. Persistence — Lưu dữ liệu xuống disk
 
-### 7.1 Cache Aside (Lazy Loading) ⭐ Phổ biến nhất
+Redis in-memory, nhưng nếu server restart thì mất hết? Không hẳn — Redis có hai cơ chế persistence:
 
-**Flow đọc:**
-1. App kiểm tra cache
-2. Miss → App gọi DB
-3. App lưu kết quả vào cache
-4. Trả về client
+### 4.1 RDB (Redis Database Snapshot)
 
-**Flow ghi:**
-- Ghi vào DB, sau đó xóa hoặc update cache
+Tạo **snapshot** toàn bộ dữ liệu vào file `.rdb` theo định kỳ.
 
 ```
-App ──→ Cache (miss) ──→ DB ──→ App ──→ Cache (lưu lại)
+# redis.conf
+save 900 1      # nếu có ≥1 thay đổi trong 900s → snapshot
+save 300 10     # nếu có ≥10 thay đổi trong 300s → snapshot
+save 60 10000   # nếu có ≥10000 thay đổi trong 60s → snapshot
 ```
 
-**Ưu điểm:** Linh hoạt, dễ implement, cache chỉ chứa dữ liệu thực sự được dùng  
-**Nhược điểm:** 3 lần round-trip khi miss; có thể bị stale nếu không invalidate đúng
+**Ưu điểm:**
+- File compact, dễ backup và restore
+- Performance cao (không ảnh hưởng đến hot path)
+- Startup nhanh
 
-👉 **Dùng khi:** Đọc nhiều hơn ghi, không yêu cầu cache luôn up-to-date tuyệt đối.
+**Nhược điểm:**
+- Có thể mất data từ lần snapshot cuối đến khi crash (vài phút)
 
 ---
 
-### 7.2 Read Through
+### 4.2 AOF (Append Only File)
 
-**Flow:** App chỉ nói chuyện với cache. Cache layer tự biết cách load từ DB khi miss.
+Ghi lại **mọi write command** vào file log. Khi restart, Redis replay lại toàn bộ commands.
 
 ```
-App ──→ Cache ──→ (nếu miss) DB
-              ←── (tự lưu lại)
+# redis.conf
+appendonly yes
+appendfsync everysec   # flush xuống disk mỗi 1 giây
+# appendfsync always   # flush sau mỗi command (an toàn nhất, chậm nhất)
+# appendfsync no       # để OS quyết định (nhanh nhất, ít an toàn)
 ```
 
-**Ưu điểm:** Logic đơn giản hơn ở tầng App  
-**Nhược điểm:** Cache layer phức tạp hơn (phải biết kết nối DB)
+**Ưu điểm:**
+- Mất tối đa 1 giây data (với `everysec`)
+- File dễ đọc và có thể chỉnh sửa thủ công
 
-👉 **Dùng khi:** Muốn tách bạch hoàn toàn logic cache khỏi App.
+**Nhược điểm:**
+- File lớn hơn RDB
+- Startup chậm hơn (phải replay)
+- AOF rewrite cần để file không phình quá to
 
 ---
 
-### 7.3 Write Through
+### 4.3 Chọn cái nào?
 
-**Flow ghi:** Ghi đồng thời vào cache VÀ DB trong cùng một transaction.
+| | RDB | AOF | Kết hợp cả hai |
+|---|---|---|---|
+| Durability | Thấp | Cao | Rất cao |
+| Performance | Cao | Trung bình | Trung bình |
+| File size | Nhỏ | Lớn | — |
+| Restart speed | Nhanh | Chậm | Chậm |
+| **Dùng khi** | Cache thuần, mất ít data OK | Cần durability cao | Production quan trọng |
 
-```
-App ──→ Cache ──→ DB (đồng bộ)
-```
-
-**Ưu điểm:** Cache luôn nhất quán với DB  
-**Nhược điểm:** Ghi chậm hơn (phải chờ cả DB); cache có thể chứa nhiều dữ liệu không bao giờ được đọc
-
-👉 **Dùng khi:** Cần tính nhất quán cao giữa cache và DB.
-
----
-
-### 7.4 Write Back (Write Behind)
-
-**Flow ghi:** Ghi vào cache trước, DB được cập nhật **bất đồng bộ** sau.
-
-```
-App ──→ Cache (ghi ngay) ──→ DB (async, sau vài giây/phút)
-```
-
-**Ưu điểm:** Tốc độ ghi rất nhanh; giảm số lần write vào DB (batching)  
-**Nhược điểm:** Nguy cơ mất data nếu cache crash trước khi sync xuống DB
-
-👉 **Dùng khi:** Hệ thống cần throughput ghi cực cao (gaming leaderboard, analytics, IoT).
+**Best practice cho production:** Bật cả hai — AOF làm primary, RDB làm backup.
 
 ---
 
-### So sánh các patterns
+## 5. Expiration (TTL)
 
-| Pattern | Tốc độ đọc | Tốc độ ghi | Độ nhất quán | Độ phức tạp |
-|---|---|---|---|---|
-| Cache Aside | ⭐⭐⭐ | ⭐⭐⭐ | Trung bình | Thấp |
-| Read Through | ⭐⭐⭐⭐ | ⭐⭐⭐ | Trung bình | Trung bình |
-| Write Through | ⭐⭐⭐⭐ | ⭐⭐ | Cao | Trung bình |
-| Write Back | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | Thấp | Cao |
+```bash
+# Đặt TTL khi tạo
+SET key "value" EX 3600     # seconds
+SET key "value" PX 3600000  # milliseconds
+SET key "value" EXAT 1700000000  # Unix timestamp
 
----
+# Đặt TTL sau khi đã tạo
+EXPIRE key 3600             # seconds
+PEXPIRE key 3600000         # milliseconds
 
-## 8. Các vấn đề thực tế thường gặp
+# Kiểm tra TTL còn lại
+TTL key    # → giây còn lại (-1 = không hết hạn, -2 = không tồn tại)
+PTTL key   # → milliseconds còn lại
 
-### 8.1 Cache Stampede (Thundering Herd)
-
-**Vấn đề:** Nhiều cache key hết hạn cùng lúc (hoặc một key hot bị xóa) → hàng trăm request đồng thời ập vào DB.
-
-```
-TTL hết → 500 requests cùng gọi DB → DB chết
-```
-
-**Giải pháp:**
-- **Mutex/Lock**: Chỉ 1 request được phép rebuild cache, các request khác chờ
-- **Staggered TTL**: Thêm random jitter vào TTL (ví dụ: 5 phút ± 30 giây) để tránh expire cùng lúc
-- **Background refresh**: Refresh cache proactively trước khi hết TTL
-- **Probabilistic early expiration**: Bắt đầu refresh sớm hơn khi TTL còn ít
-
----
-
-### 8.2 Cache Penetration
-
-**Vấn đề:** Attacker (hoặc bug) liên tục request những key **không tồn tại** trong cả cache lẫn DB. Cache luôn miss → DB bị spam.
-
-```
-GET /user/99999999 (không tồn tại)
-→ Cache miss
-→ DB query (không có)
-→ Không lưu cache
-→ Lặp lại mãi → DB quá tải
+# Xóa TTL (làm key tồn tại mãi mãi)
+PERSIST key
 ```
 
-**Giải pháp:**
-- **Cache null value**: Lưu giá trị `null` hoặc `"NOT_FOUND"` vào cache với TTL ngắn
-- **Bloom Filter**: Kiểm tra nhanh key có tồn tại không trước khi query DB (false positive nhưng không false negative)
+**Cơ chế xóa key hết hạn của Redis:**
+
+Redis dùng kết hợp hai chiến lược:
+
+1. **Lazy expiration**: Khi access một key → kiểm tra TTL → nếu hết hạn thì xóa lúc đó
+2. **Active expiration**: Background job định kỳ (100ms/lần) scan ngẫu nhiên ~20 key có TTL → xóa những key đã hết hạn → nếu >25% hết hạn thì lặp lại ngay
 
 ---
 
-### 8.3 Cache Breakdown (Hot Key Expiry)
+## 6. Replication — Master/Replica
 
-**Vấn đề:** Một key **cực kỳ hot** bỗng nhiên hết TTL → tất cả request ập vào DB cho đúng 1 key đó.
+Redis hỗ trợ **replication** để tăng khả năng đọc và fault tolerance.
 
-Khác với Stampede ở chỗ: chỉ 1 key, nhưng traffic vào key đó rất lớn.
+```
+┌─────────────────┐
+│   Master        │ ← Xử lý ghi
+│   (Read/Write)  │
+└────────┬────────┘
+         │ Async replication
+    ┌────┴────┐
+    ↓         ↓
+┌───────┐ ┌───────┐
+│Replica│ │Replica│ ← Xử lý đọc (scale out)
+│(Read) │ │(Read) │
+└───────┘ └───────┘
+```
 
-**Giải pháp:**
-- **Mutex**: Khóa khi rebuild cache
-- **Không dùng TTL cho hot key**: Quản lý invalidation thủ công
-- **Replica cache**: Nhiều bản copy của hot key
+```bash
+# Trên replica (redis.conf)
+replicaof 192.168.1.100 6379
+```
 
----
-
-### 8.4 Cache Avalanche
-
-**Vấn đề:** Toàn bộ cache server bị down (crash, restart), hoặc rất nhiều key cùng hết TTL → 100% traffic đổ vào DB.
-
-**Giải pháp:**
-- **Circuit Breaker**: Tự động reject request khi DB quá tải thay vì để hệ thống chết hoàn toàn
-- **Multi-layer cache**: L1 (local) + L2 (distributed Redis) → nếu Redis down vẫn có local cache
-- **Staggered TTL** (tương tự Stampede)
-- **Rate limiting**: Giới hạn số request vào DB khi cache down
-
----
-
-## 9. Các loại cache trong thực tế
-
-### 9.1 Local Cache (In-process)
-
-Cache nằm **trong bộ nhớ của chính process** chạy ứng dụng.
-
-- **Ví dụ:** `HashMap` trong Java, `dict` trong Python, `node-cache` trong Node.js
-- **Ưu điểm:** Cực nhanh (không có network), zero latency
-- **Nhược điểm:** Không chia sẻ được giữa nhiều instance; bị mất khi restart; khó đồng bộ
-
-👉 **Dùng khi:** Single-instance app, dữ liệu ít thay đổi (config, lookup tables).
+**Lưu ý:** Replication là **asynchronous** — có thể có lag nhỏ giữa master và replica.
 
 ---
 
-### 9.2 Distributed Cache
+## 7. Redis Sentinel — High Availability
 
-Cache **chạy trên server riêng biệt**, nhiều instance app cùng chia sẻ.
+Khi Master chết, ai sẽ tự động promote Replica lên làm Master mới? → **Redis Sentinel**
+
+```
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│Sentinel 1│  │Sentinel 2│  │Sentinel 3│
+└────┬─────┘  └────┬─────┘  └────┬─────┘
+     │              │              │
+     └──────────────┴──────────────┘
+                    │ Monitor + Failover
+              ┌─────┴──────┐
+              │   Master    │
+              └─────┬──────┘
+                    │
+             ┌──────┴──────┐
+             ↓              ↓
+          Replica 1      Replica 2
+```
+
+**Quy trình failover:**
+1. Sentinel phát hiện Master không phản hồi
+2. Các Sentinel **vote** (cần quorum — thường 2/3) để xác nhận master thực sự chết
+3. Sentinel chọn và promote một Replica thành Master mới
+4. Các Replica còn lại được reconfigure để follow Master mới
+5. Client được notify về địa chỉ Master mới
+
+**Yêu cầu:** Cần ít nhất **3 Sentinel** để đảm bảo quorum tránh split-brain.
+
+---
+
+## 8. Redis Cluster — Horizontal Scaling
+
+Sentinel giải quyết HA nhưng không giải quyết **sharding** — phân tán dữ liệu ra nhiều node khi data quá lớn cho một máy.
+
+### Cơ chế sharding: Hash Slot
+
+Redis Cluster chia dữ liệu thành **16,384 hash slots**.
+
+```
+hash_slot = CRC16(key) % 16,384
+```
+
+Mỗi master node chịu trách nhiệm một dải slot:
+
+```
+Node A (Master): slot 0 – 5460
+Node B (Master): slot 5461 – 10922
+Node C (Master): slot 10923 – 16383
+```
+
+Mỗi master có thêm replica riêng:
+
+```
+┌──────────────────────────────────────────┐
+│  Node A Master  ←→  Node A Replica       │
+│  (slot 0-5460)       (backup)            │
+│                                          │
+│  Node B Master  ←→  Node B Replica       │
+│  (slot 5461-10922)   (backup)            │
+│                                          │
+│  Node C Master  ←→  Node C Replica       │
+│  (slot 10923-16383)  (backup)            │
+└──────────────────────────────────────────┘
+```
+
+**Khi client gửi request sai node:**
+
+```
+Client → Node A (SET user:123)
+Node A: "Key này ở slot 8000, Node B quản lý"
+→ MOVED 8000 192.168.1.2:6379
+Client → Node B ✅
+```
+
+**Limitation của Cluster:**
+- Multi-key commands (MGET, MSET) chỉ hoạt động nếu tất cả key cùng slot
+- Dùng **hash tags** `{user:123}:profile` để force keys vào cùng slot
+
+---
+
+## 9. Các lệnh quan trọng khác
+
+### Key management
+
+```bash
+EXISTS key              # → 1 nếu tồn tại
+DEL key [key ...]       # xóa, trả về số key đã xóa
+UNLINK key              # xóa async (không block)
+TYPE key                # → string/hash/list/set/zset/stream
+RENAME key newkey       # đổi tên
+KEYS pattern            # ⚠️ KHÔNG dùng production (blocking)
+SCAN cursor MATCH pattern COUNT 100  # ✅ dùng thay KEYS
+```
+
+### Transactions
+
+```bash
+MULTI           # bắt đầu transaction
+SET key1 "a"
+SET key2 "b"
+INCR counter
+EXEC            # thực thi tất cả → atomic
+# hoặc DISCARD để hủy
+```
+
+**Lưu ý:** Redis transaction không có rollback. Nếu một lệnh lỗi cú pháp → toàn bộ fail. Nếu lỗi runtime (ví dụ INCR trên string) → các lệnh khác vẫn chạy.
+
+### Lua Scripting
+
+```bash
+# Atomic check-and-set (không thể làm với MULTI/EXEC)
+EVAL "
+  local val = redis.call('GET', KEYS[1])
+  if val == ARGV[1] then
+    return redis.call('SET', KEYS[1], ARGV[2])
+  end
+  return 0
+" 1 mykey oldvalue newvalue
+```
+
+Lua script chạy **atomic** — không có command nào khác chen vào giữa.
+
+### Pipeline
+
+```bash
+# Gửi nhiều commands cùng lúc, giảm round-trip
+redis-cli --pipe << EOF
+SET key1 val1
+SET key2 val2
+SET key3 val3
+EOF
+```
+
+Trong code (Node.js):
+```javascript
+const pipeline = redis.pipeline();
+pipeline.set('key1', 'val1');
+pipeline.set('key2', 'val2');
+pipeline.get('key1');
+await pipeline.exec(); // Chỉ 1 round-trip thay vì 3
+```
+
+---
+
+## 10. Các Use Case thực tế và cách implement
+
+### 10.1 Session Store
+
+```bash
+# Login
+SET session:{token} {user_id:123,role:admin} EX 86400
+
+# Check session
+GET session:{token}
+
+# Logout
+DEL session:{token}
+
+# Refresh session (reset TTL)
+EXPIRE session:{token} 86400
+```
+
+---
+
+### 10.2 Rate Limiting
+
+**Sliding window với Sorted Set:**
+
+```bash
+# Mỗi request của IP:
+ZADD ratelimit:192.168.1.1 {current_timestamp} {request_id}
+ZREMRANGEBYSCORE ratelimit:192.168.1.1 0 {timestamp - window_size}
+count = ZCARD ratelimit:192.168.1.1
+EXPIRE ratelimit:192.168.1.1 {window_size}
+
+# Nếu count > limit → reject
+```
+
+**Fixed window đơn giản hơn với String:**
+
+```bash
+current = INCR ratelimit:{ip}:{minute}
+if current == 1:
+    EXPIRE ratelimit:{ip}:{minute} 60
+if current > 100:
+    # reject
+```
+
+---
+
+### 10.3 Distributed Lock
+
+```bash
+# Acquire lock
+SET lock:{resource} {unique_id} NX EX 30
+# NX = chỉ set nếu chưa có
+# EX 30 = tự giải phóng sau 30s (tránh deadlock)
+
+# Release lock (phải dùng Lua để atomic check-and-delete)
+EVAL "
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+  end
+  return 0
+" 1 lock:{resource} {unique_id}
+```
+
+**Tại sao cần check unique_id khi release?**
+
+Tránh trường hợp: Lock A hết hạn → Lock B acquire → Lock A cố gắng release → xóa nhầm Lock B.
+
+---
+
+### 10.4 Leaderboard Real-time
+
+```bash
+# Cập nhật score
+ZADD leaderboard {score} {user_id}
+# hoặc tăng score
+ZINCRBY leaderboard {delta} {user_id}
+
+# Top 10
+ZREVRANGE leaderboard 0 9 WITHSCORES
+
+# Rank của user cụ thể (1-indexed)
+rank = ZREVRANK leaderboard {user_id}
+score = ZSCORE leaderboard {user_id}
+
+# Lấy surrounding players (±5 vị trí quanh user)
+ZREVRANGE leaderboard {rank-5} {rank+5} WITHSCORES
+```
+
+---
+
+### 10.5 Pub/Sub — Real-time Notification
+
+```bash
+# Publisher
+PUBLISH channel:notifications:user:123 '{"type":"message","from":"user:456"}'
+
+# Subscriber (blocking)
+SUBSCRIBE channel:notifications:user:123
+
+# Pattern subscribe
+PSUBSCRIBE channel:notifications:*
+```
+
+**Hạn chế của Pub/Sub:** Messages không được persist — nếu subscriber offline thì mất. Dùng **Stream** nếu cần reliability.
+
+---
+
+## 11. Memory Management
+
+### Xem memory usage
+
+```bash
+INFO memory
+# → used_memory_human: 1.5G
+# → mem_fragmentation_ratio: 1.2 (lý tưởng ~1.0-1.5)
+
+MEMORY USAGE key    # bộ nhớ của một key cụ thể (bytes)
+MEMORY DOCTOR       # phân tích và gợi ý
+```
+
+### Eviction khi đầy RAM
+
+Cấu hình trong `redis.conf`:
+
+```
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+```
+
+| Policy | Hành vi |
+|---|---|
+| `noeviction` | Báo lỗi khi đầy (mặc định) |
+| `allkeys-lru` | Xóa key ít dùng nhất trong toàn bộ keyspace |
+| `volatile-lru` | Xóa key ít dùng nhất trong số các key có TTL |
+| `allkeys-lfu` | Xóa key ít được access nhất (theo tần suất) |
+| `volatile-ttl` | Xóa key có TTL ngắn nhất trước |
+| `allkeys-random` | Xóa ngẫu nhiên |
+
+**Best practice:**
+- Nếu Redis là **cache thuần**: `allkeys-lru` hoặc `allkeys-lfu`
+- Nếu Redis vừa cache vừa lưu data quan trọng: `volatile-lru` (chỉ xóa key có TTL)
+
+---
+
+## 12. Monitoring & Debugging
+
+```bash
+# Thông tin tổng quan
+INFO all           # tất cả metrics
+INFO server        # version, uptime
+INFO clients       # connected_clients
+INFO stats         # hits, misses, ops/sec
+INFO replication   # master/replica status
+
+# Theo dõi commands real-time (KHÔNG dùng production)
+MONITOR
+
+# Slow log
+CONFIG SET slowlog-log-slower-than 10000  # 10ms
+SLOWLOG GET 10    # 10 slow queries gần nhất
+SLOWLOG LEN
+SLOWLOG RESET
+
+# Debug latency
+redis-cli --latency
+redis-cli --latency-history
+redis-cli --latency-dist
+
+# Thống kê hit/miss rate
+INFO stats | grep keyspace
+```
+
+**Hit rate tính thủ công:**
+
+```
+Hit Rate = keyspace_hits / (keyspace_hits + keyspace_misses)
+```
+
+---
+
+## 13. Bẫy phổ biến khi dùng Redis
+
+### ❌ Dùng KEYS trong production
+
+```bash
+KEYS user:*    # Blocking! Scan toàn bộ keyspace → freeze Redis
+```
+
+✅ Thay bằng:
+```bash
+SCAN 0 MATCH user:* COUNT 100
+```
+
+---
+
+### ❌ Không set TTL
+
+Không set TTL cho cache keys → RAM dần đầy → eviction hoặc OOM.
+
+✅ Luôn set TTL cho mọi cache key.
+
+---
+
+### ❌ Lưu object lớn (Big Key)
+
+Key có value > 10KB (string) hoặc collection > 10,000 phần tử → blocking khi serialize/delete.
+
+✅ Chia nhỏ, hoặc dùng `UNLINK` thay `DEL` (async delete).
+
+---
+
+### ❌ Không dùng connection pool
+
+Tạo kết nối mới cho mỗi request → overhead lớn.
+
+✅ Luôn dùng connection pool (ioredis, lettuce, jedis đều hỗ trợ).
+
+---
+
+### ❌ Dùng SELECT để tách môi trường
+
+Redis có 16 database (SELECT 0-15), nhưng:
+- Cluster không support SELECT
+- Không có isolation thực sự về performance
+
+✅ Dùng key prefix: `dev:user:123`, `prod:user:123`
+
+---
+
+## 14. Khi nào KHÔNG nên dùng Redis?
+
+- **Dữ liệu lớn hơn RAM**: Redis in-memory — nếu data hàng trăm GB thì không phù hợp
+- **Cần complex queries**: JOIN, aggregation phức tạp → dùng DB quan hệ
+- **Cần ACID đầy đủ**: Redis transaction thiếu rollback
+- **Data quan trọng cần durability cao**: Cân nhắc dùng DB chính, Redis làm cache phụ
+
+---
+
+## 15. Redis vs Memcached
 
 | | Redis | Memcached |
 |---|---|---|
-| Cấu trúc dữ liệu | String, Hash, List, Set, ZSet, ... | Chỉ String |
+| Data structures | String, Hash, List, Set, ZSet, ... | Chỉ String |
 | Persistence | Có (RDB, AOF) | Không |
-| Clustering | Có (Redis Cluster) | Có (nhưng phức tạp hơn) |
+| Replication | Có | Không (native) |
+| Cluster | Có | Không (client-side) |
 | Pub/Sub | Có | Không |
-| Phổ biến | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
-
-👉 **Redis** là lựa chọn mặc định trong hầu hết hệ thống hiện đại.
-
----
-
-### 9.3 Client-Side Cache (Browser)
-
-Trình duyệt cache HTML, CSS, JS, hình ảnh, API response.
-
-**Cơ chế:** HTTP headers
-- `Cache-Control: max-age=3600` — cache trong 1 giờ
-- `ETag` — kiểm tra xem file có thay đổi không
-- `Last-Modified` — so sánh thời gian cập nhật
+| Lua scripting | Có | Không |
+| Transactions | Có | Không |
+| Multi-threading | I/O threads (v6+) | Multi-threaded |
+| Memory efficiency | Tốt | Tốt hơn một chút với simple string |
+| **Kết luận** | ✅ Chọn mặc định | Chỉ khi cần multi-thread thuần túy |
 
 ---
 
-### 9.4 CDN Cache
-
-**CDN (Content Delivery Network)** cache tài nguyên tĩnh ở các **server gần người dùng** về mặt địa lý.
+## 16. Tóm tắt
 
 ```
-User ở Hà Nội → CDN server tại Hà Nội (cache) → nhanh
-User ở Hà Nội → Origin server ở US (không cache) → chậm
-```
+Redis = In-memory data structure store
+      = Cache + Session + Queue + Pub/Sub + Lock + ...
 
-**Ví dụ:** Cloudflare, AWS CloudFront, Fastly
-
----
-
-### 9.5 Database Cache
-
-Chính bản thân database cũng có cache nội bộ:
-
-- **Buffer Pool** (MySQL InnoDB, PostgreSQL): Cache các data page thường xuyên đọc trong RAM
-- **Query Cache**: Cache kết quả của các query giống nhau (MySQL đã deprecated vì nhiều vấn đề)
-- **Index**: Không phải cache nhưng cũng giảm số lần đọc disk
-
----
-
-## 10. Stale Data — Vấn đề không thể tránh
-
-Cache **KHÔNG phải source of truth**. Nó là bản sao, và bản sao có thể lỗi thời.
-
-```
-1. Cache lưu: user:123 = {name: "Nguyễn Văn A"}
-2. User đổi tên thành "Nguyễn Văn B" trong DB
-3. Cache chưa update
-4. Request tiếp theo nhận được tên cũ "Nguyễn Văn A"
-```
-
-**Mức độ chấp nhận stale data phụ thuộc vào business:**
-
-| Dữ liệu | Stale OK? |
-|---|---|
-| Số like của bài post | Vài phút OK |
-| Thông tin sản phẩm | Vài phút OK |
-| Số dư tài khoản ngân hàng | Không OK — cần real-time |
-| Tồn kho sản phẩm (flash sale) | Không OK — cần real-time |
-
----
-
-## 11. Khi nào KHÔNG nên dùng cache?
-
-- **Dữ liệu thay đổi quá thường xuyên**: Cache liên tục bị invalidate → hit rate thấp → không có lợi
-- **Yêu cầu real-time tuyệt đối**: Số dư tài khoản, trạng thái đặt vé, tồn kho flash sale
-- **Dữ liệu mỗi user khác nhau hoàn toàn** và ít được reuse
-- **Hệ thống nhỏ, traffic thấp**: Thêm cache chỉ làm tăng độ phức tạp mà không có lợi rõ ràng
-- **Dữ liệu nhạy cảm** cần kiểm soát truy cập chặt chẽ (lưu cache sai chỗ có thể leak)
-
----
-
-## 12. Checklist khi thiết kế cache
-
-Trước khi thêm cache, hãy tự hỏi:
-
-- [ ] **Dữ liệu có được reuse không?** Nếu mỗi request cần dữ liệu khác nhau → cache vô nghĩa
-- [ ] **Hit rate dự kiến là bao nhiêu?** Dưới ~50% → xem lại có nên cache không
-- [ ] **TTL hợp lý là bao lâu?** Quá dài → stale data; quá ngắn → hit rate thấp
-- [ ] **Invalidation strategy là gì?** Ai xóa cache khi data thay đổi?
-- [ ] **Có xử lý được Cache Stampede không?** Đặc biệt với hot key
-- [ ] **Cache failure thì sao?** App có fallback về DB được không?
-- [ ] **Security**: Cache có lưu dữ liệu nhạy cảm không? Có bị user A đọc data của user B không?
-
----
-
-## 13. Mindset đúng về cache
-
-> Cache không phải source of truth. Nó là **bản sao tạm thời để tăng tốc**, và bản sao có thể sai.
-
-Hai điều luôn phải chấp nhận khi dùng cache:
-
-1. **Complexity**: Hệ thống phức tạp hơn — phải quản lý invalidation, handle stampede, monitor hit rate
-2. **Eventual consistency**: Có khoảng thời gian ngắn mà cache và DB không đồng bộ
-
-Hãy thiết kế hệ thống sao cho **khoảng thời gian không đồng bộ đó nằm trong ngưỡng chấp nhận được** của business.
-
----
-
-## 14. Tóm tắt
-
-```
-Cache = Lưu kết quả cũ vào bộ nhớ nhanh hơn
-      → Lần sau không cần tính lại / query lại
-      → Đánh đổi: RAM + complexity <> tốc độ + scalability
+Nhanh vì: RAM + Single-threaded (no lock) + Non-blocking I/O
+Flexible vì: 8+ kiểu dữ liệu cho mọi bài toán
+Production-ready vì: Persistence + Replication + Sentinel + Cluster
 ```
 
 **Key takeaways:**
 
-- Cache tăng tốc hệ thống bằng cách khai thác Temporal & Spatial Locality
-- Bản chất là trade-off: tốc độ đổi lấy tính nhất quán và độ phức tạp
-- Pattern phổ biến nhất: **Cache Aside** — check → miss → load DB → store
-- Vấn đề khó nhất: **Cache Invalidation** — khi nào xóa cache?
-- Redis là lựa chọn distributed cache mặc định trong industry
-- Luôn hỏi: "Hệ thống của mình có thể chấp nhận stale data bao lâu?"
+- Chọn đúng **data structure** là 80% thành công khi dùng Redis
+- Luôn **set TTL** và cấu hình **maxmemory-policy** phù hợp
+- **SCAN** thay **KEYS**, **UNLINK** thay **DEL** cho big keys
+- Dùng **Pipeline** để giảm round-trip khi thực hiện nhiều commands
+- **Sentinel** cho HA, **Cluster** cho horizontal scaling
+- Redis là **cache + utility store**, không phải primary database cho business-critical data
