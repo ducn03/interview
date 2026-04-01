@@ -1,976 +1,1017 @@
-# 🏪 Merchant Domain — Payment / Fintech
+# 🏪 Merchant Domain — Business Deep Dive
 
-> Tài liệu này giải thích toàn bộ domain **Merchant** trong hệ thống Payment / Fintech: từ khái niệm cơ bản, business model, data model, luồng nghiệp vụ đến tích hợp hệ thống.
-
----
-
-## 1. Merchant là gì?
-
-**Merchant** (đơn vị chấp nhận thanh toán) là **cá nhân hoặc doanh nghiệp bán hàng/dịch vụ** và sử dụng hệ thống payment để **nhận tiền từ khách hàng**.
-
-### Ví dụ thực tế
-
-| Merchant | Loại | Dùng payment để làm gì |
-|---|---|---|
-| Cửa hàng trà sữa | Offline | Nhận QR Code, POS |
-| Shop thời trang Shopee | Online | Nhận thanh toán đơn hàng |
-| Ứng dụng gọi xe | Platform | Thu tiền từ hành khách, trả cho tài xế |
-| SaaS subscription | Online | Thu phí hàng tháng tự động |
-| Siêu thị lớn | Offline | POS, thẻ, QR |
-
-### Phân biệt các bên trong hệ sinh thái
-
-```
-Cardholder / Customer      Merchant              Acquirer            Issuer
-(Người mua)            (Người bán)         (Ngân hàng của        (Ngân hàng của
-                                            merchant)              khách hàng)
-      │                     │                    │                    │
-      │  ── thanh toán ──>  │                    │                    │
-      │                     │  ── request ──>    │  ── verify ──>    │
-      │                     │                    │  <── approve ──   │
-      │                     │  <── approved ──   │                    │
-      │  <── receipt ──     │                    │                    │
-```
-
-- **Customer/Cardholder**: Người mua — trả tiền
-- **Merchant**: Người bán — nhận tiền
-- **Acquirer**: Ngân hàng/tổ chức quản lý tài khoản của merchant (VD: VietcomBank, VNPAY)
-- **Issuer**: Ngân hàng phát hành thẻ cho khách hàng (VD: Techcombank)
-- **Payment Gateway**: Cầu nối kỹ thuật giữa merchant và acquirer (VD: VNPAY, PayOS, Stripe)
-- **PSP (Payment Service Provider)**: Cung cấp toàn bộ dịch vụ payment cho merchant (gateway + acquirer + settlement)
+> Tài liệu này tập trung hoàn toàn vào **business** của domain Merchant trong hệ thống Payment / Fintech. Dành cho người muốn hiểu thật sự — không chỉ biết tên thuật ngữ mà còn hiểu tại sao nó tồn tại, nó hoạt động như thế nào trong thực tế, và các bên liên quan đang nghĩ gì.
 
 ---
 
-## 2. Business Model — Merchant trong hệ thống Payment
+## 1. Merchant là ai — và tại sao họ quan trọng?
 
-### 2.1 Cách merchant kiếm tiền và hệ thống kiếm tiền từ merchant
+### Định nghĩa đơn giản
+
+**Merchant** là bất kỳ cá nhân hay tổ chức nào **bán hàng hoặc dịch vụ** và muốn **nhận tiền từ khách hàng thông qua hệ thống thanh toán điện tử**.
+
+Nhưng hiểu đúng hơn trong ngữ cảnh Payment/Fintech:
+
+> Merchant là **đối tác kinh doanh** của Payment Provider — người trả phí để dùng hạ tầng thanh toán, và đổi lại được nhận tiền từ hàng triệu khách hàng một cách an toàn, nhanh chóng.
+
+### Merchant KHÔNG phải là khách hàng cuối
+
+Đây là nhầm lẫn phổ biến khi mới vào nghề.
+
+```
+Customer (người mua)   ←→   Merchant (người bán)   ←→   Payment Provider
+    Trả tiền                   Nhận tiền                  Cung cấp hạ tầng
+    Mua hàng/dịch vụ           Bán hàng/dịch vụ            Thu phí từ merchant
+```
+
+Trong hệ thống payment:
+- **Customer** là người dùng cuối — họ dùng app, quẹt thẻ, chuyển khoản
+- **Merchant** là **B2B partner** — họ ký hợp đồng, đóng phí, nhận settlement
+- **Payment Provider** phục vụ merchant, merchant phục vụ customer
+
+Khi bạn build hệ thống, merchant là **doanh nghiệp đang trả tiền cho bạn** để dùng dịch vụ. Hiểu business của họ = hiểu tại sao họ có thể rời đi.
+
+---
+
+## 2. Toàn bộ hệ sinh thái — ai là ai?
+
+Mỗi giao dịch thanh toán liên quan đến rất nhiều bên. Hiểu từng bên giúp bạn hiểu tại sao dòng tiền lại phức tạp như vậy.
+
+### 2.1 Các bên chính
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MỘT GIAO DỊCH THANH TOÁN                    │
+│                                                                  │
+│  [Customer]──────►[Merchant]──────►[Payment Gateway]            │
+│      │                                      │                    │
+│      │                               ┌──────┴──────┐            │
+│      │                               ▼             ▼            │
+│      │                          [Acquirer]    [Card Network]     │
+│      │                               │        (Visa/Master)     │
+│      │                               ▼             │            │
+│      └────────────────────────►[Issuer Bank]◄───────┘           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Customer (Cardholder / Payer)
+Người mua hàng, trả tiền. Trong một số tài liệu còn gọi là **payer** hoặc **end-user**.
+- Họ không có hợp đồng với Payment Provider
+- Họ chỉ muốn thanh toán nhanh, an toàn
+- Nếu có vấn đề, họ sẽ khiếu nại với **ngân hàng của họ** (issuer), không phải merchant
+
+#### Merchant
+Người bán. Ký hợp đồng với Payment Provider để chấp nhận thanh toán điện tử.
+- Chịu mọi rủi ro kinh doanh: hàng hóa, dịch vụ, refund, chargeback
+- Trả phí MDR cho mỗi giao dịch thành công
+- Nhận tiền qua settlement định kỳ, không phải real-time
+
+#### Acquirer (Acquiring Bank / Ngân hàng tiếp nhận)
+Ngân hàng hoặc tổ chức tài chính **đại diện cho merchant** trong hệ thống thanh toán.
+- Cung cấp **merchant account** — tài khoản trung gian giữ tiền trước khi settlement
+- Chịu trách nhiệm với card network (Visa/Master) nếu merchant làm sai
+- **Rủi ro lớn nhất của Acquirer**: merchant gian lận, chargeback cao, không đủ tiền hoàn trả
+
+Ví dụ ở Việt Nam: VNPAY (cả acquirer và gateway), VietcomBank, Techcombank đều có vai trò acquiring.
+
+#### Issuer (Issuing Bank / Ngân hàng phát hành)
+Ngân hàng **phát hành thẻ/ví** cho customer.
+- Xét duyệt hoặc từ chối giao dịch (có đủ tiền không? Có bị block không?)
+- Là người **customer gọi điện khi có vấn đề**
+- Xử lý chargeback khi customer khiếu nại
+
+Ví dụ: Techcombank phát hành thẻ Visa cho bạn → Techcombank là issuer của bạn.
+
+#### Card Network (Payment Scheme)
+Tổ chức vận hành mạng lưới thanh toán toàn cầu: **Visa, Mastercard, JCB, UnionPay**.
+- Đặt ra **luật chơi**: ai được tham gia, phí interchange là bao nhiêu, chargeback xử lý thế nào
+- Kết nối acquirer và issuer trên toàn cầu
+- Thu **interchange fee** và **scheme fee** từ mỗi giao dịch
+
+Ở Việt Nam còn có **NAPAS** — mạng lưới thanh toán nội địa, xử lý giao dịch thẻ ATM và chuyển khoản liên ngân hàng.
+
+#### Payment Gateway
+Cầu nối kỹ thuật — nhận request thanh toán từ merchant, route đến acquirer phù hợp.
+- Merchant chỉ cần tích hợp **một gateway**, gateway lo việc kết nối nhiều acquirer/ngân hàng
+- Cung cấp API, SDK, dashboard cho merchant
+- Thường kiêm luôn vai trò **PSP**
+
+#### PSP (Payment Service Provider)
+Cung cấp **trọn gói dịch vụ payment** cho merchant: gateway + acquiring + settlement.
+- Merchant không cần ký hợp đồng riêng với từng ngân hàng
+- PSP gom nhiều merchant lại, đứng ra làm **master merchant** với acquirer
+- Ví dụ: Stripe (global), VNPAY, PayOS, Momo (Việt Nam)
+
+### 2.2 Dòng tiền thực sự đi đâu?
 
 ```
 Customer trả 100,000đ
          │
          ▼
-    Payment Gateway
-         │
-    Trừ MDR (fee)
+Issuer Bank (ngân hàng của customer)
+  Trừ 100,000đ từ tài khoản customer
+  Giữ lại: Interchange fee ~1.0% = 1,000đ
+         │ Chuyển 99,000đ
+         ▼
+Card Network (Visa/Master)
+  Thu Scheme fee ~0.1% = 100đ
+         │ Chuyển 98,900đ
+         ▼
+Acquirer (ngân hàng của merchant)
+  Thu Acquirer margin ~0.2% = 200đ
+         │ Chuyển 98,700đ
+         ▼
+Payment Gateway / PSP
+  Thu Gateway fee ~0.2% = 200đ
          │
          ▼
-  Merchant nhận ~98,500đ
+Merchant Account (tài khoản trung gian)
+  Giữ lại Rolling Reserve 10% = 10,000đ
+         │
+         ▼
+Settlement T+1: Merchant nhận 88,700đ
+(98,700đ - 10,000đ reserve)
 ```
 
-**MDR (Merchant Discount Rate)**: Phí merchant trả cho mỗi giao dịch thành công.
+> Đây là lý do MDR thường từ **1.5% – 3%**: nó bao gồm interchange fee, scheme fee, acquirer margin, và gateway fee cộng lại.
 
-Ví dụ MDR = 1.5%:
-- Giao dịch 100,000đ → Merchant nhận 98,500đ
-- Payment provider giữ 1,500đ
+---
 
-### 2.2 Các loại phí merchant phải trả
+## 3. Phân loại Merchant
 
-| Loại phí | Mô tả | Ví dụ |
-|---|---|---|
-| **MDR** | % trên mỗi giao dịch | 0.5% – 3% tùy phương thức |
-| **Setup fee** | Phí mở tài khoản | Miễn phí hoặc vài triệu |
-| **Monthly fee** | Phí duy trì hàng tháng | 0 – 500,000đ |
-| **Chargeback fee** | Phí khi bị khiếu nại hoàn tiền | 150,000 – 500,000đ/vụ |
-| **Payout fee** | Phí rút tiền về tài khoản ngân hàng | 0 – 11,000đ/lần |
+Không phải merchant nào cũng giống nhau. Phân loại đúng ảnh hưởng đến phí, giới hạn, quy trình KYB, và rủi ro.
 
-### 2.3 Các mô hình merchant phổ biến
+### 3.1 Theo quy mô kinh doanh
+
+#### Micro Merchant (Hộ kinh doanh nhỏ lẻ)
+- Doanh thu < 1 tỷ/năm
+- Ví dụ: quán cà phê vỉa hè, shop quần áo nhỏ, freelancer
+- Thường onboard qua app tự phục vụ, KYC đơn giản (chỉ cần CCCD)
+- MDR cao hơn vì volume thấp, rủi ro cao hơn
+- Thanh toán chủ yếu: QR code, ví điện tử
+
+#### SME (Small & Medium Enterprise)
+- Doanh thu 1 tỷ – 500 tỷ/năm
+- Ví dụ: chuỗi cửa hàng, công ty thương mại điện tử vừa, nhà hàng chain
+- KYB đầy đủ: giấy phép KD, giấy tờ người đại diện, hợp đồng
+- Có nhân viên sales chăm sóc
+- Đàm phán được MDR thấp hơn nếu volume đủ lớn
+
+#### Enterprise / Key Account
+- Doanh thu > 500 tỷ/năm
+- Ví dụ: Vincom, Thế Giới Di Động, các airline, ngân hàng
+- MDR đặc biệt, thương lượng trực tiếp
+- Có dedicated account manager
+- Yêu cầu SLA riêng, tích hợp sâu hơn
+
+### 3.2 Theo kênh bán hàng
+
+#### Online Merchant
+Bán hoàn toàn qua internet: website, app mobile, social commerce.
+- Không có điểm vật lý
+- Thanh toán: thẻ online, ví, QR, BNPL (mua trước trả sau)
+- Rủi ro cao hơn offline vì không có mặt customer trực tiếp → fraud nhiều hơn
+- Chargeback rate thường cao hơn
+
+#### Offline Merchant (POS Merchant)
+Bán tại cửa hàng vật lý, customer có mặt trực tiếp.
+- Thanh toán: POS machine, QR in sẵn, contactless
+- Rủi ro thấp hơn (có mặt customer, có camera)
+- Thường MDR thấp hơn online
+
+#### Omnichannel Merchant
+Bán cả online lẫn offline — xu hướng hiện tại của retail lớn.
+- Cần hệ thống payment hợp nhất: cùng dashboard, cùng báo cáo
+- Phức tạp hơn về reconciliation (đối soát)
+
+### 3.3 Theo mô hình kinh doanh
 
 #### Direct Merchant
-Merchant bán trực tiếp cho end-user. Luồng đơn giản nhất.
+Merchant tự bán trực tiếp cho customer. Đơn giản nhất.
+```
+Customer ──► Merchant ──► Payment Provider
+```
 
+#### Marketplace / Platform Merchant
+Một platform kết nối nhiều người bán (seller) với người mua. Platform thu tiền rồi chia cho các seller.
 ```
-Customer → [Thanh toán] → Merchant
+Customer ──► Platform ──► Seller A (sub-merchant)
+                      ──► Seller B (sub-merchant)
+                      ──► Platform fee
 ```
+Ví dụ: Shopee, Lazada, Grab Food, Airbnb.
 
-#### Marketplace / Platform
-Merchant bán trên nền tảng trung gian. Platform thu hộ rồi phân chia.
+Đây là mô hình phức tạp nhất vì:
+- Platform phải xử lý **split payment**: tách tiền ra cho nhiều bên
+- Mỗi seller là một "sub-merchant" cần được quản lý riêng
+- Compliance: platform chịu trách nhiệm KYB cho từng seller
 
+#### Subscription Merchant
+Thu tiền định kỳ (hàng tháng/năm) tự động.
 ```
-Customer → [Thanh toán] → Platform → [Split] → Merchant A
-                                              → Merchant B
-                                              → Platform fee
+Customer ──► Merchant
+              T+0: Thu tháng 1
+              T+30: Thu tháng 2 (auto)
+              T+60: Thu tháng 3 (auto)
 ```
-Ví dụ: Shopee, Grab, Tiki
+Ví dụ: Netflix, Spotify, các SaaS.
+Cần tính năng: **recurring billing**, quản lý thẻ đã lưu (card on file), xử lý khi thẻ hết hạn.
 
-#### Sub-merchant (Payment Facilitation)
-Một merchant lớn (PayFac) đứng ra đăng ký thay cho nhiều merchant nhỏ.
-
+#### On-demand / Gig Economy
+Thu tiền từ customer, giữ lại phí, trả phần còn lại cho người cung cấp dịch vụ.
 ```
-Customer → [Thanh toán] → PayFac (Master Merchant)
-                               → Sub-merchant A
-                               → Sub-merchant B
+Customer trả 100,000đ cho chuyến xe
+Platform giữ 20,000đ (20% commission)
+Tài xế nhận 80,000đ
 ```
-Ví dụ: Square, Stripe Connect — cho phép platform tạo merchant con.
+Ví dụ: Grab, Be, Gojek, Ahamove.
+Cần tính năng: **payout to many** (chi trả cho hàng nghìn tài xế/ngày).
 
 ---
 
-## 3. Các khái niệm cốt lõi
+## 4. MDR — Trái tim của Business Model
 
-### 3.1 Merchant Account vs Business Account
+MDR (Merchant Discount Rate) là **phí merchant trả cho mỗi giao dịch thành công**. Đây là nguồn doanh thu chính của Payment Provider.
 
-| | Merchant Account | Business Account |
+### 4.1 MDR được tính như thế nào?
+
+```
+MDR = Interchange Fee + Scheme Fee + Acquirer Margin + Gateway Fee
+
+Ví dụ giao dịch thẻ Visa tại merchant online:
+- Interchange Fee: 1.0%   (Issuer bank thu)
+- Scheme Fee:      0.1%   (Visa thu)
+- Acquirer Margin: 0.2%   (Acquiring bank thu)
+- Gateway Fee:     0.2%   (Payment gateway thu)
+─────────────────────────
+MDR:               1.5%   (Merchant trả)
+```
+
+Payment Provider thường **gộp tất cả vào một số duy nhất** khi báo cho merchant, gọi là **blended MDR**.
+
+### 4.2 Tại sao MDR khác nhau theo phương thức thanh toán?
+
+| Phương thức | MDR điển hình | Lý do |
 |---|---|---|
-| Mục đích | Nhận thanh toán từ card/QR | Tài khoản ngân hàng thông thường |
-| Ai cấp | Acquirer / PSP | Ngân hàng |
-| Chứa tiền? | Tạm thời (pending settlement) | Có |
+| Thẻ tín dụng Visa/Master | 1.8% – 3.0% | Interchange fee cao, rủi ro chargeback |
+| Thẻ ghi nợ (debit) | 0.5% – 1.5% | Interchange thấp hơn |
+| QR Code (NAPAS) | 0% – 0.5% | Chính sách ưu đãi của NAPAS/NHNN |
+| Ví điện tử (Momo, ZaloPay) | 0.5% – 1.5% | Phụ thuộc hợp đồng ví |
+| Chuyển khoản ngân hàng | 0% – 0.3% | Chi phí thấp nhất |
+| BNPL (mua trước trả sau) | 2% – 6% | Rủi ro tín dụng cao |
 
-### 3.2 Settlement (Thanh toán định kỳ)
+**Tại sao thẻ tín dụng đắt nhất?**
 
-Tiền từ giao dịch **không về ngay** tài khoản ngân hàng của merchant. Nó được **giữ lại** và **settlement** (chuyển) định kỳ.
+- Issuer bank phải bù đắp rủi ro cho vay (customer chưa có tiền vẫn mua được)
+- Chương trình rewards/cashback cho customer được tài trợ bởi interchange fee
+- Rủi ro chargeback cao hơn (customer dễ khiếu nại hơn)
 
-```
-Giao dịch thành công (T)
-        │
-        ▼
-  Tiền vào holding pool
-        │
-   T+1 hoặc T+2 ngày
-        │
-        ▼
-  Settlement: chuyển tiền về tài khoản ngân hàng merchant
-```
-
-**Tại sao có độ trễ?** Để xử lý refund, chargeback, kiểm tra gian lận.
-
-### 3.3 Rolling Reserve
-
-Hệ thống **giữ lại một phần tiền** của merchant (thường 5–10%) trong một khoảng thời gian nhất định để đảm bảo nếu có chargeback thì có tiền hoàn trả.
+### 4.3 MDR ảnh hưởng đến merchant như thế nào?
 
 ```
-Giao dịch 1,000,000đ
-├── 90% → Settlement ngay → 900,000đ về tài khoản merchant
-└── 10% → Reserve 90 ngày → 100,000đ giải phóng sau 3 tháng
+Ví dụ: Chuỗi cà phê doanh thu 10 tỷ/tháng, 100% thanh toán điện tử
+
+Kịch bản 1: MDR = 1.5%
+→ Phí payment: 150,000,000đ/tháng = 1.8 tỷ/năm
+
+Kịch bản 2: MDR = 0.5% (đàm phán được)
+→ Phí payment: 50,000,000đ/tháng = 600 triệu/năm
+
+Chênh lệch: 1.2 tỷ/năm
 ```
 
-### 3.4 Chargeback
+Đó là lý do merchant lớn **rất chú ý đến MDR** và luôn đàm phán. Với doanh nghiệp margin thấp như F&B, grocery, 1% MDR có thể là sự khác biệt giữa có lãi và hòa vốn.
 
-Khách hàng khiếu nại với ngân hàng phát hành thẻ → ngân hàng **buộc hoàn tiền** về cho khách, không cần merchant đồng ý.
+### 4.4 Các mô hình định giá MDR
 
+#### Flat Rate (Đồng giá)
+Tất cả giao dịch cùng một mức phí, bất kể phương thức hay loại thẻ.
+- Ưu điểm: Đơn giản, dễ dự đoán chi phí
+- Ví dụ: Stripe charge 2.9% + $0.30 mọi giao dịch tại Mỹ
+- Phù hợp: Merchant nhỏ, không muốn phức tạp
+
+#### Interchange Plus (Cost Plus)
+MDR = Interchange thực tế + markup cố định của provider.
+- Ưu điểm: Merchant biết chính xác mình trả bao nhiêu cho mỗi loại thẻ
+- Ví dụ: Interchange + 0.3% + 1,000đ/giao dịch
+- Phù hợp: Enterprise, volume lớn, muốn tối ưu chi phí
+
+#### Tiered Pricing (Phân tầng)
+Chia thành 3 mức: Qualified / Mid-qualified / Non-qualified dựa trên loại thẻ và cách giao dịch.
+- Phức tạp, dễ gây nhầm lẫn
+- Provider đôi khi dùng để ẩn chi phí thực
+
+#### Volume-based Discount
+Càng giao dịch nhiều, MDR càng thấp.
 ```
-Customer khiếu nại "không nhận được hàng"
-        │
-        ▼
-Issuer bank (ngân hàng khách hàng)
-        │
-        ▼
-Acquirer nhận thông báo chargeback
-        │
-        ▼
-Trừ tiền từ tài khoản merchant
-        │
-Merchant có quyền dispute (tranh chấp) bằng bằng chứng
+Doanh thu < 1 tỷ/tháng:   MDR = 1.5%
+1 tỷ – 5 tỷ/tháng:        MDR = 1.2%
+> 5 tỷ/tháng:              MDR = 0.9%
 ```
 
-Chargeback rate cao → merchant có thể bị **terminate** (đóng tài khoản).
+---
 
-### 3.5 KYC / KYB (Know Your Customer / Know Your Business)
+## 5. Merchant Onboarding — Tại sao lại phức tạp?
 
-Quy trình **xác minh danh tính** merchant trước khi được phép nhận thanh toán.
+Onboarding không chỉ là "tạo tài khoản". Nó là quy trình **thẩm định rủi ro** trước khi Provider đồng ý nhận tiền hộ merchant.
 
-| | KYC | KYB |
+### 5.1 Tại sao Provider phải thận trọng?
+
+Khi một merchant gian lận hoặc bị chargeback nhiều:
+- **Provider chịu trách nhiệm** với acquirer và card network
+- Provider có thể bị **phạt tiền** hoặc **mất license**
+- Tiền đã settlement cho merchant → Provider phải **bù từ túi mình** nếu không đòi lại được
+
+Đó là lý do onboarding merchant là **quy trình kiểm soát rủi ro**, không chỉ là bán hàng.
+
+### 5.2 Các thông tin cần thu thập khi onboarding
+
+#### Thông tin cơ bản về doanh nghiệp
+- Tên doanh nghiệp, MST (mã số thuế)
+- Loại hình doanh nghiệp (TNHH, Cổ phần, Hộ KD, Cá nhân)
+- Ngành nghề kinh doanh → xác định MCC
+- Địa chỉ đăng ký kinh doanh
+- Website/app/fanpage (nếu bán online)
+
+#### Thông tin người đại diện / chủ sở hữu
+- CCCD/Hộ chiếu
+- Địa chỉ thường trú
+- Tỷ lệ sở hữu (nếu > 25% phải khai báo — quy định AML)
+
+#### Giấy tờ pháp lý (KYB documents)
+- Giấy chứng nhận đăng ký kinh doanh
+- Giấy phép kinh doanh chuyên ngành (nếu có — ví dụ: dược phẩm, tài chính)
+- Điều lệ công ty
+- Biên bản họp HĐQT ủy quyền (nếu người ký không phải giám đốc)
+
+#### Thông tin tài chính
+- Tài khoản ngân hàng nhận settlement (phải đứng tên doanh nghiệp)
+- Doanh thu dự kiến/tháng
+- Giá trị giao dịch trung bình
+- Lĩnh vực kinh doanh chính
+
+#### Thông tin sản phẩm/dịch vụ
+- Mô tả chi tiết sản phẩm/dịch vụ bán
+- Chính sách hoàn/hủy (refund policy)
+- Thời gian giao hàng (nếu là ecommerce)
+- Website đang hoạt động thực sự không?
+
+### 5.3 Quy trình thẩm định (Underwriting)
+
+Sau khi nhận đủ hồ sơ, Provider thực hiện **underwriting** — đánh giá rủi ro của merchant.
+
+#### Kiểm tra tự động (Auto checks)
+```
+✓ Blacklist check: Merchant/người đại diện có trong danh sách cấm không?
+  (OFAC, local regulatory blacklist, internal blacklist)
+
+✓ Duplicate check: Tài khoản ngân hàng/MST đã đăng ký trước đây chưa?
+  (Tránh một người lập nhiều merchant để bypass limit)
+
+✓ Business verification: MST có tồn tại trên cổng thông tin thuế?
+
+✓ Website check (nếu online merchant):
+  - Website có hoạt động không?
+  - Có bán đúng sản phẩm đã khai không?
+  - Có đủ thông tin liên hệ, chính sách hoàn hàng không?
+
+✓ MCC risk check: Ngành nghề có thuộc high-risk category không?
+```
+
+#### Kiểm tra thủ công (Manual review)
+Với merchant có doanh thu lớn hoặc ngành nghề nhạy cảm, nhân viên review trực tiếp:
+- Xác minh giấy tờ pháp lý (ảnh thật? Chưa hết hạn?)
+- Gọi điện xác nhận thông tin
+- Research doanh nghiệp trên Google, mạng xã hội
+- Đánh giá rủi ro chargeback và fraud
+
+#### Kết quả underwriting
+- **Approve**: Merchant được cấp MID, bắt đầu nhận giao dịch
+- **Approve with conditions**: Được approve nhưng với giới hạn thấp hơn, rolling reserve cao hơn
+- **Request more info**: Cần bổ sung hồ sơ
+- **Reject**: Từ chối, lý do được ghi lại để tránh merchant "vòng vo" đăng ký lại
+
+### 5.4 High-Risk Merchants — Danh mục ngành nghề rủi ro cao
+
+Một số ngành nghề được card network và acquirer xếp vào **high-risk**, yêu cầu thẩm định chặt hơn, MDR cao hơn, và rolling reserve bắt buộc.
+
+| Mức độ rủi ro | Ngành nghề | Lý do |
 |---|---|---|
-| Đối tượng | Cá nhân | Doanh nghiệp |
-| Giấy tờ | CMND/CCCD, selfie | Giấy phép KD, MST, giấy tờ người đại diện |
-| Mục đích | Chống giả mạo, rửa tiền | Chống shell company, fraud |
+| **Cực cao** (thường bị từ chối) | Cờ bạc, vũ khí, nội dung người lớn, tiền mã hóa không rõ nguồn gốc | Vi phạm pháp luật hoặc scheme rules |
+| **Cao** | Dịch vụ du lịch, vé máy bay | Thời gian giữa thanh toán và nhận dịch vụ dài → chargeback cao |
+| **Cao** | Thực phẩm chức năng, thuốc | Dễ bị khiếu nại về chất lượng |
+| **Cao** | Subscription/recurring | Customer quên đăng ký → khiếu nại "không biết bị trừ tiền" |
+| **Trung bình** | Thương mại điện tử chung | Không gặp mặt trực tiếp → gian lận cao hơn |
+| **Thấp** | Siêu thị, nhà hàng, xăng dầu | Giao dịch trực tiếp, hàng hóa rõ ràng |
 
-### 3.6 MID (Merchant ID)
+### 5.5 Merchant Tiering sau onboarding
 
-Mã định danh duy nhất của merchant trong hệ thống payment. Mỗi merchant có ít nhất một MID. Merchant lớn có thể có nhiều MID (mỗi kênh bán một MID riêng).
+Sau khi được approve, merchant được xếp **tier** ảnh hưởng đến MDR, giới hạn, và mức độ hỗ trợ:
 
-### 3.7 MCC (Merchant Category Code)
+```
+TIER 1 — Standard (mặc định mới vào)
+  MDR: Giá niêm yết
+  Transaction limit: 10 triệu/giao dịch
+  Daily limit: 100 triệu/ngày
+  Support: Ticket/email
 
-Mã 4 chữ số phân loại ngành nghề của merchant. Do Visa/Mastercard quy định.
+TIER 2 — Preferred (sau 3-6 tháng, volume tốt)
+  MDR: Giảm 0.2-0.3%
+  Transaction limit: 50 triệu/giao dịch
+  Daily limit: 500 triệu/ngày
+  Support: Chat + email priority
 
-| MCC | Ngành |
+TIER 3 — Premium / Enterprise
+  MDR: Đàm phán riêng
+  Transaction limit: Theo thỏa thuận
+  Daily limit: Theo thỏa thuận
+  Support: Dedicated account manager
+```
+
+---
+
+## 6. Vòng đời Merchant (Merchant Lifecycle)
+
+### 6.1 Toàn bộ vòng đời
+
+```
+REGISTERED ──► UNDER REVIEW ──► ACTIVE ──► [hoạt động bình thường]
+                    │                │
+                    ▼                ├──► UNDER WATCH (cảnh báo)
+                REJECTED             │         │
+                                     │         ├──► ACTIVE (hết cảnh báo)
+                                     │         └──► SUSPENDED
+                                     │                   │
+                                     └──► SUSPENDED ──────┼──► ACTIVE (khắc phục xong)
+                                                          └──► TERMINATED
+```
+
+### 6.2 Các lý do merchant bị Suspended (Tạm khóa)
+
+Suspended có nghĩa là **không nhận được giao dịch mới**, nhưng settlement của giao dịch cũ vẫn tiếp tục (sau khi trừ các khoản phạt/reserve).
+
+**Lý do phổ biến:**
+
+| Lý do | Ngưỡng thường gặp |
 |---|---|
-| 5411 | Grocery Stores (siêu thị) |
-| 5812 | Restaurants |
-| 4111 | Local and Suburban Commuter |
-| 7011 | Hotels |
+| Chargeback rate vượt ngưỡng | > 1% (Visa) hoặc > 1.5% (Mastercard) |
+| Fraud rate cao đột biến | Hệ thống phát hiện pattern bất thường |
+| Vi phạm Terms of Service | Bán hàng cấm, lừa dối customer |
+| Hồ sơ KYB hết hạn | GPKD hoặc CCCD người đại diện hết hạn |
+| Tài khoản ngân hàng bị đóng | Không thể settlement |
+| Nghi ngờ rửa tiền | AML alert trigger |
+| Chưa cập nhật thông tin theo yêu cầu | Compliance update |
 
-MCC ảnh hưởng đến: MDR rate, giới hạn giao dịch, phân loại rủi ro.
+### 6.3 Terminated — Chấm dứt hợp đồng vĩnh viễn
 
----
+Merchant bị terminated thường vì:
+- Chargeback rate liên tục vượt ngưỡng sau nhiều lần cảnh báo
+- Phát hiện gian lận, rửa tiền, hoặc bán hàng cấm
+- Tự ý chấm dứt hợp đồng
 
-## 4. Data Model / Database Schema
+**Hệ quả nghiêm trọng:** Merchant bị terminated có thể bị đưa vào **MATCH List** (Mastercard Alert to Control High-risk Merchants) hoặc **TMF** (Terminated Merchant File) — blacklist toàn cầu của card network.
 
-### 4.1 Tổng quan các entity chính
-
-```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Merchant   │────<│ MerchantLocation │     │ MerchantAccount │
-└──────┬──────┘     └──────────────────┘     └────────┬────────┘
-       │                                              │
-       │            ┌──────────────────┐              │
-       ├────────────│  MerchantConfig  │              │
-       │            └──────────────────┘              │
-       │                                              │
-       │            ┌──────────────────┐     ┌────────┴────────┐
-       └────────────│   Transaction    │────>│   Settlement    │
-                    └──────────────────┘     └─────────────────┘
-```
+Một khi vào MATCH List:
+- Không một acquirer nào trên thế giới dám cấp merchant account
+- Thời gian tồn tại trong list: 5 năm
+- Rất khó kháng cáo
 
 ---
 
-### 4.2 Merchant (Entity chính)
+## 7. Settlement — Cơ chế chuyển tiền cho merchant
 
-```sql
-CREATE TABLE merchants (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    merchant_code   VARCHAR(20) UNIQUE NOT NULL,   -- MID: VN-2024-00123
-    business_name   VARCHAR(255) NOT NULL,          -- Tên đăng ký kinh doanh
-    display_name    VARCHAR(255),                   -- Tên hiển thị với khách hàng
-    merchant_type   VARCHAR(50) NOT NULL,           -- individual | business | enterprise
-    category_code   VARCHAR(10) NOT NULL,           -- MCC: 5812
-    status          VARCHAR(30) NOT NULL DEFAULT 'pending',
-                    -- pending | under_review | active | suspended | terminated
+Settlement là một trong những khái niệm quan trọng nhất cần hiểu rõ.
 
-    -- KYC / KYB
-    kyc_status      VARCHAR(30) DEFAULT 'not_started',
-                    -- not_started | in_progress | submitted | approved | rejected
-    kyc_verified_at TIMESTAMPTZ,
+### 7.1 Tại sao tiền không về ngay?
 
-    -- Contact
-    email           VARCHAR(255) NOT NULL,
-    phone           VARCHAR(20),
-    website         VARCHAR(500),
+Giả sử merchant bán một món hàng lúc 9h sáng. Tại sao phải chờ đến ngày hôm sau mới nhận tiền?
 
-    -- Business address
-    country_code    CHAR(2) NOT NULL DEFAULT 'VN',
-    province        VARCHAR(100),
-    district        VARCHAR(100),
-    address         TEXT,
+**Lý do 1: Chargeback window**
 
-    -- Tier & Risk
-    merchant_tier   VARCHAR(20) DEFAULT 'standard', -- standard | premium | enterprise
-    risk_level      VARCHAR(20) DEFAULT 'medium',   -- low | medium | high
-    chargeback_rate DECIMAL(5,4) DEFAULT 0,         -- 0.0150 = 1.5%
+Customer có thể khiếu nại và đòi hoàn tiền trong vòng **60–120 ngày** sau giao dịch. Nếu Provider settlement ngay, rồi customer khiếu nại, Provider sẽ phải bỏ tiền túi ra hoàn trả.
 
-    -- Timestamps
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    activated_at    TIMESTAMPTZ,
-    terminated_at   TIMESTAMPTZ
-);
+**Lý do 2: Xử lý batch của ngân hàng**
+
+Hệ thống thanh toán ngân hàng (NAPAS, Vietcombank) xử lý thanh toán theo **batch**, không real-time 24/7.
+
+**Lý do 3: Kiểm tra gian lận**
+
+Cho thêm thời gian để hệ thống phát hiện các giao dịch gian lận trước khi tiền đến tay merchant.
+
+### 7.2 Các chu kỳ Settlement phổ biến
+
+| Cycle | Giải thích | Dùng khi nào |
+|---|---|---|
+| **T+0** (same day) | Giao dịch hôm nay → tiền về chiều tối hôm nay | Merchant VIP, phí cao hơn |
+| **T+1** | Giao dịch hôm nay → tiền về ngày mai | Phổ biến nhất |
+| **T+2** | Giao dịch hôm nay → tiền về ngày kia | Thẻ quốc tế, một số acquirer |
+| **Weekly** | Tiền về mỗi tuần một lần | Merchant nhỏ, low volume |
+
+**Ngày làm việc hay ngày calendar?**
+
+Quan trọng: T+1 nghĩa là **T+1 ngày làm việc**, không phải ngày calendar.
+
 ```
+Giao dịch thứ Sáu (T)
+→ Settlement thứ Hai (T+1)
+(Thứ 7, Chủ nhật không tính)
+```
+
+### 7.3 Cách tính Settlement
+
+```
+Settlement Amount = Gross Sales
+                  - MDR Fees
+                  - Refunds (của kỳ này)
+                  - Chargebacks (nếu có)
+                  - Rolling Reserve (giữ lại)
+                  + Reserve Released (trả lại reserve cũ)
+```
+
+**Ví dụ cụ thể:**
+
+```
+Kỳ settlement: 01/12/2024
+
+Giao dịch thành công:    200 giao dịch
+Gross Sales:             80,000,000đ
+MDR (1.5%):              -1,200,000đ
+Refunds:                   -500,000đ
+Chargeback:                       0đ
+Rolling Reserve (10%):   -8,000,000đ
+Reserve Released:         +3,000,000đ  (tiền giữ từ 90 ngày trước)
+─────────────────────────────────────
+Net Settlement:          73,300,000đ
+```
+
+### 7.4 Rolling Reserve — Chi tiết
+
+Rolling Reserve là khoản tiền Provider **giữ lại** như một "quỹ bảo hiểm rủi ro".
+
+**Cơ chế hoạt động:**
+
+```
+Ngày 1:  Giữ lại 10% = 10,000đ  (trả lại ngày 91)
+Ngày 2:  Giữ lại 10% = 8,000đ   (trả lại ngày 92)
+Ngày 3:  Giữ lại 10% = 12,000đ  (trả lại ngày 93)
+...
+Ngày 91: Nhận lại 10,000đ từ ngày 1
+Ngày 92: Nhận lại 8,000đ từ ngày 2
+```
+
+Sau 90 ngày đầu tiên, merchant vừa bị giữ tiền mới, vừa nhận lại tiền cũ → **ổn định về sau**.
+
+**Mức reserve phụ thuộc vào:**
+- Ngành nghề (high-risk → reserve cao hơn)
+- Lịch sử chargeback
+- Merchant mới (chưa có lịch sử → reserve cao hơn)
+- Mức độ tin cậy của merchant
+
+**Reserve thông thường:**
+
+| Loại merchant | Reserve rate | Thời gian giữ |
+|---|---|---|
+| Merchant standard, lịch sử tốt | 0% – 5% | 90 ngày |
+| Merchant mới | 5% – 10% | 90 ngày |
+| High-risk merchant | 10% – 15% | 120 – 180 ngày |
+| Merchant đang bị điều tra | Lên đến 100% | Không xác định |
 
 ---
 
-### 4.3 MerchantConfig (Cấu hình thương mại)
+## 8. Chargeback — Vấn đề đau đầu nhất của merchant
 
-```sql
-CREATE TABLE merchant_configs (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    merchant_id     UUID NOT NULL REFERENCES merchants(id),
+### 8.1 Chargeback là gì và tại sao nó khác refund?
 
-    -- Fee configuration
-    mdr_rate        DECIMAL(6,4) NOT NULL DEFAULT 0.0150, -- 1.50%
-    mdr_fixed_fee   DECIMAL(12,2) DEFAULT 0,              -- Phí cố định/giao dịch (đồng)
-    payout_fee      DECIMAL(12,2) DEFAULT 0,              -- Phí rút tiền
-
-    -- Transaction limits
-    min_txn_amount  DECIMAL(15,2) DEFAULT 1000,
-    max_txn_amount  DECIMAL(15,2) DEFAULT 50000000,       -- 50 triệu/giao dịch
-    daily_limit     DECIMAL(15,2) DEFAULT 500000000,      -- 500 triệu/ngày
-
-    -- Settlement
-    settlement_cycle VARCHAR(20) DEFAULT 'T+1',            -- T+0 | T+1 | T+2 | weekly
-    settlement_time  TIME DEFAULT '08:00:00',              -- Giờ settlement mỗi ngày
-
-    -- Rolling reserve
-    reserve_rate    DECIMAL(5,4) DEFAULT 0,                -- 0.10 = 10%
-    reserve_days    INTEGER DEFAULT 90,
-
-    -- Payment methods được phép
-    allowed_methods JSONB DEFAULT '["card","qr","bank_transfer"]',
-
-    -- Webhook
-    webhook_url     VARCHAR(500),
-    webhook_secret  VARCHAR(255),
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
----
-
-### 4.4 MerchantBankAccount (Tài khoản nhận settlement)
-
-```sql
-CREATE TABLE merchant_bank_accounts (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    merchant_id     UUID NOT NULL REFERENCES merchants(id),
-
-    bank_code       VARCHAR(20) NOT NULL,   -- VCB, TCB, MB, ...
-    bank_name       VARCHAR(255) NOT NULL,
-    account_number  VARCHAR(50) NOT NULL,
-    account_name    VARCHAR(255) NOT NULL,  -- Tên chủ tài khoản (phải khớp)
-    branch          VARCHAR(255),
-
-    is_primary      BOOLEAN DEFAULT FALSE,  -- Tài khoản settlement chính
-    is_verified     BOOLEAN DEFAULT FALSE,  -- Đã xác minh quyền sở hữu
-    verified_at     TIMESTAMPTZ,
-    status          VARCHAR(20) DEFAULT 'active', -- active | inactive
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
----
-
-### 4.5 Transaction (Giao dịch)
-
-```sql
-CREATE TABLE transactions (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    transaction_ref VARCHAR(100) UNIQUE NOT NULL, -- Mã GD duy nhất toàn hệ thống
-    merchant_id     UUID NOT NULL REFERENCES merchants(id),
-    merchant_ref    VARCHAR(255),               -- Mã đơn hàng của merchant
-
-    -- Amounts
-    amount          DECIMAL(15,2) NOT NULL,
-    currency        CHAR(3) NOT NULL DEFAULT 'VND',
-    fee_amount      DECIMAL(15,2) NOT NULL DEFAULT 0,
-    net_amount      DECIMAL(15,2) NOT NULL,     -- amount - fee_amount
-
-    -- Status
-    status          VARCHAR(30) NOT NULL,
-    -- initiated | pending | processing | completed | failed | refunded | chargeback
-
-    -- Payment method
-    payment_method  VARCHAR(50) NOT NULL,        -- card | qr | bank_transfer | wallet
-    payment_channel VARCHAR(50),                 -- visa | mastercard | napas | momo | ...
-
-    -- Card info (masked)
-    card_last4      CHAR(4),
-    card_brand      VARCHAR(20),
-    card_bank       VARCHAR(100),
-
-    -- Settlement
-    is_settled      BOOLEAN DEFAULT FALSE,
-    settlement_id   UUID,                        -- Gắn với settlement batch
-    settled_at      TIMESTAMPTZ,
-
-    -- Metadata
-    ip_address      INET,
-    device_type     VARCHAR(50),
-    description     TEXT,
-    metadata        JSONB,                       -- Dữ liệu thêm của merchant
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at    TIMESTAMPTZ
-);
-```
-
----
-
-### 4.6 Settlement (Thanh toán định kỳ)
-
-```sql
-CREATE TABLE settlements (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    settlement_ref  VARCHAR(100) UNIQUE NOT NULL,
-    merchant_id     UUID NOT NULL REFERENCES merchants(id),
-    bank_account_id UUID NOT NULL REFERENCES merchant_bank_accounts(id),
-
-    -- Period
-    period_from     TIMESTAMPTZ NOT NULL,
-    period_to       TIMESTAMPTZ NOT NULL,
-
-    -- Amounts
-    gross_amount    DECIMAL(15,2) NOT NULL,   -- Tổng doanh thu
-    fee_amount      DECIMAL(15,2) NOT NULL,   -- Tổng phí
-    refund_amount   DECIMAL(15,2) DEFAULT 0,  -- Tổng hoàn tiền
-    chargeback_amount DECIMAL(15,2) DEFAULT 0,
-    reserve_amount  DECIMAL(15,2) DEFAULT 0,  -- Tiền giữ lại (rolling reserve)
-    net_amount      DECIMAL(15,2) NOT NULL,   -- Thực nhận
-
-    txn_count       INTEGER NOT NULL,          -- Số giao dịch trong kỳ
-
-    -- Status
-    status          VARCHAR(30) NOT NULL DEFAULT 'pending',
-    -- pending | processing | completed | failed
-
-    -- Bank transfer
-    bank_ref        VARCHAR(255),              -- Mã chuyển khoản ngân hàng
-    transferred_at  TIMESTAMPTZ,
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
----
-
-### 4.7 KYC Documents
-
-```sql
-CREATE TABLE merchant_kyc_documents (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    merchant_id     UUID NOT NULL REFERENCES merchants(id),
-
-    doc_type        VARCHAR(50) NOT NULL,
-    -- cccd | passport | business_license | tax_certificate
-    -- bank_statement | director_id | company_charter
-
-    file_url        VARCHAR(500) NOT NULL,
-    file_name       VARCHAR(255),
-    file_size       INTEGER,
-
-    status          VARCHAR(30) DEFAULT 'pending',
-    -- pending | approved | rejected
-
-    reviewer_id     UUID,                      -- Staff review
-    reviewer_note   TEXT,
-    reviewed_at     TIMESTAMPTZ,
-
-    expires_at      TIMESTAMPTZ,               -- Giấy tờ hết hạn
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
----
-
-### 4.8 Quan hệ tổng thể
+**Refund** là khi merchant **tự nguyện** hoàn tiền cho customer.
+**Chargeback** là khi customer **bypass merchant**, khiếu nại thẳng với ngân hàng và ngân hàng **buộc** thu tiền lại từ merchant.
 
 ```
-merchants (1) ──────── (1) merchant_configs
-merchants (1) ──────── (N) merchant_bank_accounts
-merchants (1) ──────── (N) merchant_kyc_documents
-merchants (1) ──────── (N) transactions
-merchants (1) ──────── (N) settlements
-settlements (1) ─────── (N) transactions [thông qua settlement_id]
+REFUND:
+Customer khiếu nại với Merchant
+→ Merchant đồng ý hoàn tiền
+→ Merchant chủ động refund
+
+CHARGEBACK:
+Customer khiếu nại với Issuer Bank
+→ Issuer điều tra
+→ Issuer buộc Acquirer lấy lại tiền
+→ Acquirer trừ tiền từ tài khoản merchant
+→ Merchant không có quyền từ chối (trừ khi dispute thành công)
 ```
 
----
+### 8.2 Các lý do customer thường dùng để chargeback
 
-## 5. Luồng nghiệp vụ
+| Lý do (Reason Code) | Ý nghĩa thực tế | Tần suất |
+|---|---|---|
+| **Item not received** | Không nhận được hàng | Rất cao |
+| **Item not as described** | Hàng khác với mô tả | Cao |
+| **Unauthorized transaction** | "Tôi không thực hiện giao dịch này" (thẻ bị đánh cắp) | Cao |
+| **Credit not processed** | Đã refund nhưng tiền chưa về | Trung bình |
+| **Duplicate processing** | Bị trừ tiền 2 lần | Thấp |
+| **Friendly fraud** | Customer đã nhận hàng nhưng vẫn claim "không nhận được" | **Ngày càng phổ biến** |
 
-### 5.1 Luồng Onboarding (Đăng ký merchant)
+### 8.3 Friendly Fraud — Vấn đề ngày càng lớn
 
-```
-Merchant submit form
-        │
-        ▼
-[1] Tạo merchant với status = "pending"
-        │
-        ▼
-[2] Merchant upload KYC/KYB documents
-        │
-        ▼
-[3] System auto-check (nếu có AI/OCR):
-    - Đọc thông tin CCCD/GPKD
-    - Kiểm tra blacklist
-    - Kiểm tra trùng lặp tài khoản
-        │
-        ▼
-[4] Status → "under_review"
-        │
-        ▼
-[5] Staff review thủ công:
-    - Xác minh giấy tờ hợp lệ
-    - Kiểm tra ngành nghề (MCC phù hợp?)
-    - Đánh giá rủi ro
-        │
-   ┌────┴────┐
-Approved   Rejected
-   │           │
-   ▼           ▼
-[6] Setup:   Gửi email
-  - MID      lý do từ chối
-  - API keys
-  - Webhook
-  - MDR rate
-   │
-   ▼
-Status → "active"
-   │
-   ▼
-[7] Gửi email chào mừng + credentials
-```
+**Friendly fraud** (còn gọi là **chargeback fraud**) xảy ra khi customer:
+- Nhận được hàng/dịch vụ bình thường
+- Nhưng vẫn khiếu nại với ngân hàng là "không nhận được" hoặc "không thực hiện giao dịch"
+- Mục đích: lấy lại tiền mà vẫn giữ hàng
 
-**State machine của merchant status:**
+Đây là vấn đề cực kỳ khó xử lý vì:
+- Issuer bank thường **đứng về phía customer** (customer mà!)
+- Merchant phải có bằng chứng rất rõ ràng để dispute thành công
+
+### 8.4 Chargeback Process — Từng bước
 
 ```
-pending ──→ under_review ──→ active ──→ suspended ──→ terminated
-                │                          ↑               ↑
-                └──→ rejected              │               │
-                                    (vi phạm TOS)  (chargeback cao,
-                                                    fraud phát hiện)
+[1] Customer gọi điện cho Issuer Bank
+    "Tôi không nhận được hàng, tôi muốn khiếu nại"
+
+[2] Issuer Bank mở dispute
+    Tạm thời hoàn tiền cho customer (provisional credit)
+
+[3] Issuer gửi chargeback request đến Card Network (Visa/Master)
+    Card Network forward đến Acquirer
+
+[4] Acquirer nhận chargeback
+    Trừ tiền từ Merchant Account ngay lập tức
+    Notify cho Payment Gateway
+
+[5] Gateway notify Merchant
+    "Bạn nhận được chargeback #CB-2024-XXX"
+    "Số tiền: 500,000đ"
+    "Lý do: Item not received"
+    "Hạn để dispute: 20 ngày"
+
+[6] Merchant có 2 lựa chọn:
+
+    OPTION A: Chấp nhận chargeback
+    → Không làm gì → tiền mất → record chargeback
+
+    OPTION B: Dispute (kháng cáo)
+    → Cung cấp bằng chứng trong thời hạn:
+      - Proof of delivery (biên lai giao hàng)
+      - Hợp đồng/điều khoản đã ký
+      - Communication với customer
+      - IP address, device fingerprint
+      - Tracking number
+
+[7] Acquirer review bằng chứng → gửi lên Card Network
+
+[8] Card Network ra quyết định
+    WIN: Tiền trả lại cho merchant
+    LOSE: Tiền mất vĩnh viễn, thêm chargeback fee
 ```
 
----
+### 8.5 Chargeback Ratio — Ngưỡng nguy hiểm
 
-### 5.2 Luồng giao dịch (Transaction Flow)
-
-#### Thanh toán QR Code
+Card network theo dõi **chargeback ratio** của từng merchant mỗi tháng:
 
 ```
-[1] Merchant tạo payment request
-    POST /payments → trả về QR code / payment_url
-
-[2] Customer quét QR → thanh toán trên app ngân hàng
-
-[3] Bank xử lý → notify về Payment Gateway
-
-[4] Gateway cập nhật transaction status = "completed"
-
-[5] Gateway gửi Webhook đến merchant
-
-[6] Merchant update đơn hàng
+Chargeback Ratio = Số chargeback trong tháng / Số transaction trong tháng
 ```
 
-Chi tiết hơn với trạng thái:
+**Ngưỡng cảnh báo của Visa:**
 
-```
-initiated → pending → processing → completed
-                              └──→ failed
-                              └──→ timeout (QR hết hạn)
-```
-
-#### Refund Flow
-
-```
-Merchant gọi API refund (trong vòng X ngày)
-        │
-        ▼
-Kiểm tra:
-- Giao dịch gốc có tồn tại?
-- Đã completed chưa?
-- Số tiền refund ≤ số tiền gốc?
-- Chưa bị refund toàn phần?
-        │
-        ▼
-Tạo refund transaction (amount âm)
-        │
-        ▼
-Trừ tiền từ balance/settlement tiếp theo của merchant
-        │
-        ▼
-Hoàn tiền về phương thức thanh toán gốc của customer
-        │
-        ▼
-Webhook → merchant biết refund thành công
-```
-
----
-
-### 5.3 Luồng Settlement
-
-```
-Mỗi ngày lúc 08:00 (ví dụ cycle T+1):
-
-[1] Job chạy: lấy tất cả transaction ngày hôm qua
-    WHERE merchant_id = X
-    AND status = 'completed'
-    AND is_settled = FALSE
-
-[2] Tính toán:
-    gross_amount = SUM(amount)
-    fee_amount   = SUM(fee_amount)
-    net_amount   = gross_amount - fee_amount - refund - chargeback - reserve
-
-[3] Tạo settlement record (status = "pending")
-
-[4] Gắn các transactions vào settlement
-    UPDATE transactions SET settlement_id = X, is_settled = TRUE
-
-[5] Gửi lệnh chuyển tiền đến banking partner
-    (Napas, SWIFT, internal transfer)
-
-[6] Đợi banking confirm
-    → status = "completed" + bank_ref
-    → hoặc "failed" → retry / alert
-
-[7] Gửi settlement report email / webhook đến merchant
-```
-
-**Settlement report mỗi kỳ:**
-
-```
-Kỳ: 01/12/2024 – 01/12/2024
-─────────────────────────────
-Tổng giao dịch:      150
-Doanh thu gộp:   45,000,000đ
-Phí giao dịch:     -675,000đ  (1.5%)
-Hoàn tiền:        -500,000đ
-Chargeback:              0đ
-Rolling reserve:  -4,382,500đ (10%)
-─────────────────────────────
-Thực nhận:       39,442,500đ
-Tài khoản nhận:  Vietcombank - 0123456789
-```
-
----
-
-### 5.4 Luồng Payout (Rút tiền chủ động)
-
-Khác với settlement tự động, **payout** là khi merchant chủ động yêu cầu rút tiền ngay.
-
-```
-Merchant request payout
-        │
-        ▼
-Kiểm tra:
-- available_balance có đủ không?
-- Tài khoản ngân hàng đã verify?
-- Không đang bị suspended?
-- Trong giờ hành chính ngân hàng?
-        │
-        ▼
-Tạo payout request
-Trừ available_balance ngay (hold)
-        │
-        ▼
-Gửi chuyển khoản → Banking API
-        │
-   ┌────┴────┐
-Success    Failed
-   │           │
-   ▼           ▼
-Cập nhật    Hoàn lại
-status      balance
-completed   → alert merchant
-   │
-   ▼
-Webhook + Email thông báo
-```
-
----
-
-## 6. Tích hợp hệ thống (API & Webhook)
-
-### 6.1 API Design cho merchant
-
-#### Authentication
-
-Merchant dùng **API Key** để xác thực. Có 2 loại:
-
-```
-Public Key  (pk_live_xxx): Dùng ở frontend (tạo payment token)
-Secret Key  (sk_live_xxx): Dùng ở backend (tạo payment, refund, query)
-```
-
-Gọi API:
-```http
-POST /v1/payments
-Authorization: Bearer sk_live_xxxxxxxxxxxx
-Content-Type: application/json
-```
-
----
-
-#### Tạo Payment Request
-
-```http
-POST /v1/payments
-Authorization: Bearer {secret_key}
-
-{
-  "amount": 150000,
-  "currency": "VND",
-  "payment_method": "qr",
-  "merchant_ref": "ORDER-2024-00123",  // Mã đơn hàng của merchant
-  "description": "Thanh toán đơn hàng #123",
-  "customer": {
-    "name": "Nguyen Van A",
-    "email": "a@email.com",
-    "phone": "0901234567"
-  },
-  "metadata": {
-    "product_ids": ["p1", "p2"],
-    "channel": "mobile_app"
-  },
-  "return_url": "https://shop.com/payment/result",
-  "cancel_url":  "https://shop.com/payment/cancel",
-  "expire_in":   900   // QR hết hạn sau 15 phút
-}
-```
-
-Response:
-```json
-{
-  "transaction_ref": "TXN-20241201-ABCDE",
-  "status": "pending",
-  "amount": 150000,
-  "currency": "VND",
-  "qr_code": "00020101021238...",          // QR string
-  "qr_image_url": "https://cdn.../qr.png", // QR image
-  "payment_url": "https://pay.../TXN-xxx", // Link thanh toán
-  "expired_at": "2024-12-01T09:15:00Z",
-  "created_at": "2024-12-01T09:00:00Z"
-}
-```
-
----
-
-#### Query Transaction
-
-```http
-GET /v1/payments/{transaction_ref}
-Authorization: Bearer {secret_key}
-```
-
-Response:
-```json
-{
-  "transaction_ref": "TXN-20241201-ABCDE",
-  "merchant_ref": "ORDER-2024-00123",
-  "status": "completed",
-  "amount": 150000,
-  "fee_amount": 2250,
-  "net_amount": 147750,
-  "payment_method": "qr",
-  "payment_channel": "vcb",
-  "completed_at": "2024-12-01T09:03:45Z"
-}
-```
-
----
-
-#### Refund
-
-```http
-POST /v1/payments/{transaction_ref}/refunds
-Authorization: Bearer {secret_key}
-
-{
-  "amount": 150000,      // Có thể refund một phần
-  "reason": "customer_request",
-  "merchant_ref": "REFUND-ORDER-00123"
-}
-```
-
----
-
-#### Query Settlement
-
-```http
-GET /v1/settlements?from=2024-12-01&to=2024-12-31
-Authorization: Bearer {secret_key}
-```
-
----
-
-### 6.2 Webhook
-
-Webhook là cơ chế **hệ thống chủ động thông báo** đến merchant khi có sự kiện xảy ra. Merchant không cần polling liên tục.
-
-#### Các events quan trọng
-
-| Event | Khi nào trigger |
+| Ratio | Hậu quả |
 |---|---|
-| `payment.completed` | Giao dịch thành công |
-| `payment.failed` | Giao dịch thất bại |
-| `payment.expired` | QR/link hết hạn |
-| `refund.completed` | Hoàn tiền thành công |
-| `refund.failed` | Hoàn tiền thất bại |
-| `settlement.completed` | Đã chuyển tiền về ngân hàng |
-| `chargeback.received` | Nhận khiếu nại từ khách hàng |
-| `merchant.suspended` | Tài khoản bị tạm khóa |
+| < 0.65% | Bình thường |
+| 0.65% – 0.9% | **Early Warning** — nhận cảnh báo |
+| 0.9% – 1.8% | **Standard Monitoring Program** — phạt $50/chargeback |
+| > 1.8% | **Excessive Chargeback Program** — phạt $300/chargeback, nguy cơ mất merchant account |
 
-#### Webhook payload
+### 8.6 Cách merchant tự bảo vệ khỏi chargeback
 
-```json
-POST https://merchant-shop.com/webhooks/payment
-Headers:
-  X-Webhook-Signature: sha256=abcdef123456...
-  X-Event-Type: payment.completed
-  X-Delivery-ID: wh_01HXXX
+**Phòng ngừa trước giao dịch:**
+- Mô tả sản phẩm rõ ràng, ảnh thực tế
+- Chính sách hoàn hàng rõ ràng, dễ tìm
+- Tên hiển thị trên sao kê ngân hàng phải nhận ra được (không dùng tên công ty pháp lý xa lạ)
+- 3DS (3D Secure) cho giao dịch online → chuyển rủi ro chargeback sang issuer
 
-Body:
-{
-  "event_type": "payment.completed",
-  "event_id": "evt_01HXXX",
-  "created_at": "2024-12-01T09:03:45Z",
-  "data": {
-    "transaction_ref": "TXN-20241201-ABCDE",
-    "merchant_ref": "ORDER-2024-00123",
-    "status": "completed",
-    "amount": 150000,
-    "net_amount": 147750,
-    "completed_at": "2024-12-01T09:03:45Z"
-  }
-}
-```
+**Khi xử lý giao dịch:**
+- Lưu đầy đủ log: IP, device, browser fingerprint
+- Xác nhận email + đường dẫn tracking
+- Với hàng giá trị cao: yêu cầu chữ ký khi nhận
 
-#### Webhook Signature Verification
+**Khi nhận chargeback:**
+- Respond đúng hạn (đừng để quá deadline)
+- Chuẩn bị bằng chứng có tổ chức, rõ ràng
+- Với chargeback nhỏ (< 100,000đ): đôi khi accept còn rẻ hơn tranh cãi
 
-Merchant phải **verify chữ ký** để đảm bảo webhook đến từ hệ thống thực sự, không phải kẻ tấn công.
+---
 
-```python
-import hmac
-import hashlib
+## 9. KYC / KYB — Xác minh để bảo vệ hệ thống
 
-def verify_webhook(payload_body: bytes, signature_header: str, secret: str) -> bool:
-    expected = hmac.new(
-        key=secret.encode(),
-        msg=payload_body,
-        digestmod=hashlib.sha256
-    ).hexdigest()
+### 9.1 Tại sao phải KYC/KYB?
 
-    received = signature_header.replace("sha256=", "")
-    return hmac.compare_digest(expected, received)
-```
+Không chỉ là quy định pháp luật. Đây là **bảo vệ cả hệ thống**:
 
-#### Webhook Retry Policy
+- **AML (Anti-Money Laundering)**: Tránh merchant dùng hệ thống để rửa tiền
+- **CTF (Counter-Terrorism Financing)**: Tránh tài trợ khủng bố
+- **Fraud Prevention**: Tránh kẻ xấu lập merchant ảo để lừa đảo
+- **Regulatory Compliance**: NHNN Việt Nam bắt buộc
 
-Nếu merchant server trả về status khác 2xx → hệ thống retry:
+### 9.2 KYC cho cá nhân vs KYB cho doanh nghiệp
+
+**KYC (Know Your Customer) — Cá nhân:**
 
 ```
-Attempt 1: Ngay lập tức
-Attempt 2: 1 phút sau
-Attempt 3: 5 phút sau
-Attempt 4: 30 phút sau
-Attempt 5: 2 giờ sau
-Attempt 6: 24 giờ sau
-→ Nếu vẫn fail: mark webhook failed, alert merchant
+Bắt buộc:
+✓ CCCD/CMND/Hộ chiếu (còn hạn)
+✓ Selfie với CCCD (liveness check)
+✓ Địa chỉ thường trú
+
+Bổ sung cho merchant cá nhân doanh thu lớn:
+✓ Sao kê ngân hàng 3 tháng gần nhất
+✓ Chứng minh nguồn thu nhập
+```
+
+**KYB (Know Your Business) — Doanh nghiệp:**
+
+```
+Bắt buộc:
+✓ Giấy chứng nhận đăng ký doanh nghiệp (GPKD)
+✓ MST (mã số thuế)
+✓ KYC của người đại diện pháp luật
+✓ KYC của các cổ đông sở hữu > 25%
+
+Theo ngành nghề:
+✓ Giấy phép chuyên ngành (nếu cần):
+  - Y tế: giấy phép dược/bệnh viện
+  - Tài chính: giấy phép NHNN
+  - Giáo dục: giấy phép Bộ GD
+
+Bổ sung cho doanh nghiệp lớn:
+✓ Báo cáo tài chính 2 năm gần nhất (hoặc được kiểm toán)
+✓ Sơ đồ cơ cấu sở hữu (ownership structure)
+✓ Danh sách UBO (Ultimate Beneficial Owner — người thực sự kiểm soát)
+```
+
+### 9.3 UBO (Ultimate Beneficial Owner) — Điều ít người biết
+
+**UBO** là người thực sự hưởng lợi từ doanh nghiệp — không phải chỉ người đứng tên.
+
+Ví dụ cấu trúc phức tạp:
+```
+Merchant: Công ty A (Việt Nam)
+  └─► 70% sở hữu bởi Công ty B (Singapore)
+            └─► 60% sở hữu bởi Ông Nguyễn Văn X (cá nhân)
+
+→ UBO thực sự là Ông Nguyễn Văn X (sở hữu 70% × 60% = 42% > 25%)
+→ Phải KYC Ông X dù ông không đứng tên Công ty A
+```
+
+Tại sao quan trọng? Kẻ xấu thường che giấu danh tính sau các lớp công ty shell.
+
+### 9.4 Ongoing KYC — Không chỉ làm một lần
+
+KYC/KYB không kết thúc sau onboarding. Provider phải duy trì:
+
+- **Kiểm tra định kỳ**: Re-verify giấy tờ khi hết hạn (GPKD gia hạn hàng năm, CCCD 15 năm/lần)
+- **Event-triggered review**: Khi phát hiện thay đổi bất thường (doanh thu tăng đột biến, ngành nghề thay đổi)
+- **AML screening**: Quét liên tục danh sách blacklist quốc tế
+- **Transaction monitoring**: Theo dõi pattern giao dịch bất thường
+
+---
+
+## 10. Merchant Risk Management
+
+### 10.1 Risk Score — Đánh giá rủi ro merchant
+
+Mỗi merchant được gán một **risk score** dựa trên nhiều yếu tố:
+
+```
+Risk Score = f(
+  Ngành nghề (MCC risk),
+  Lịch sử chargeback,
+  Lịch sử fraud,
+  Thời gian hoạt động,
+  Volume giao dịch vs dự kiến ban đầu,
+  Pattern giao dịch (giờ giấc, địa lý),
+  Tình trạng pháp lý,
+  Kết quả AML screening
+)
+```
+
+### 10.2 Các dấu hiệu rủi ro (Red Flags)
+
+**Dấu hiệu gian lận từ phía merchant:**
+
+```
+🚩 Doanh thu thực tế cao hơn nhiều so với khai báo ban đầu
+   → Có thể đang làm merchant hộ người khác (third-party merchant)
+
+🚩 Nhiều giao dịch giá trị nhỏ liên tiếp, sau đó một giao dịch lớn
+   → Kỹ thuật "structuring" để tránh ngưỡng kiểm tra
+
+🚩 Giao dịch vào giờ bất thường (2-4 giờ sáng liên tục)
+
+🚩 Nhiều thẻ khác nhau giao dịch từ cùng IP/device
+   → Card testing
+
+🚩 Refund rate đột ngột tăng cao
+   → Có thể đang rửa tiền qua cơ chế refund
+
+🚩 Ngành nghề khai báo là "tư vấn" nhưng giao dịch là mua đi bán lại
+   → Khai báo sai MCC
+```
+
+**Dấu hiệu kỹ thuật rửa tiền qua merchant:**
+
+```
+SCHEME: Structuring (smurfing)
+- Chia tiền bẩn thành nhiều giao dịch nhỏ dưới ngưỡng báo cáo
+- Ví dụ: 50 giao dịch 9,900,000đ thay vì 1 giao dịch 495,000,000đ
+
+SCHEME: Refund laundering
+- Giao dịch hợp lệ → rút tiền qua refund về thẻ khác
+- Thẻ khác là thẻ của đồng phạm
+
+SCHEME: Ghost merchant
+- Lập merchant ảo, không bán gì thật
+- Customer thực ra là đồng phạm, "mua hàng" giả
+- Tiền bẩn → qua giao dịch → thành tiền settlement hợp lệ
+```
+
+### 10.3 Transaction Monitoring Rules (Ví dụ)
+
+Provider thường có các rule tự động để phát hiện bất thường:
+
+```
+RULE 1: Single large transaction
+  IF transaction_amount > 3x average_transaction_amount
+  THEN flag for review
+
+RULE 2: Velocity check
+  IF transactions_per_hour > 50  (bất thường với merchant nhỏ)
+  THEN flag + notify risk team
+
+RULE 3: Chargeback spike
+  IF chargeback_this_week > 2x average_chargeback_per_week
+  THEN escalate to risk team
+
+RULE 4: Night time anomaly
+  IF hour IN (01:00-05:00)
+  AND transaction_count > 10
+  AND merchant_category NOT IN ('pharmacy', '24h_store', 'gas_station')
+  THEN flag for review
+
+RULE 5: Multiple cards same device
+  IF DISTINCT(card_fingerprint) > 5
+  AND time_window = '1 hour'
+  AND same device_fingerprint
+  THEN auto-suspend + alert
 ```
 
 ---
 
-### 6.3 Idempotency — Tránh xử lý trùng lặp
+## 11. Merchant Experience — Nhìn từ góc độ merchant
 
-Merchant có thể gọi API nhiều lần (retry khi timeout). Hệ thống dùng **Idempotency Key** để đảm bảo chỉ tạo một giao dịch dù gọi nhiều lần.
+Hiểu business của merchant cũng có nghĩa là hiểu họ quan tâm đến điều gì.
 
-```http
-POST /v1/payments
-Idempotency-Key: ORDER-2024-00123-attempt-1
+### 11.1 Những gì merchant quan tâm nhất
 
-{...}
-```
-
-- Lần đầu: tạo payment mới
-- Lần sau với cùng key: trả về response cũ, không tạo mới
-
----
-
-## 7. Bảo mật trong Merchant System
-
-### 7.1 PCI-DSS Compliance
-
-Nếu merchant xử lý dữ liệu thẻ, phải tuân thủ **PCI-DSS** (Payment Card Industry Data Security Standard).
-
-Nguyên tắc chính:
-- **Không bao giờ** lưu CVV
-- **Không lưu** full card number dạng plaintext
-- Card number phải được **tokenized** (thay bằng token vô nghĩa)
-- Môi trường xử lý thẻ phải isolated
+**1. Tỷ lệ giao dịch thành công (Success Rate / Approval Rate)**
 
 ```
-Card number: 4111 1111 1111 1234
-          ↓  Tokenization
-Token:      tok_live_4xNzM8p...
+Success Rate = Giao dịch completed / Tổng giao dịch attempted
 
-→ Lưu token, không lưu card number
-→ Khi charge: gửi token, không gửi card number
+Merchant mong đợi: > 95%
+Dưới 90%: Merchant sẽ cân nhắc chuyển provider
 ```
 
-### 7.2 API Key Management
+Mỗi 1% decline = tiền mất thật. Với merchant doanh thu 1 tỷ/tháng, success rate 95% vs 98% = **30 triệu đồng/tháng chênh lệch**.
+
+**2. Tốc độ settlement**
+
+Merchant nhỏ cần tiền để tái đầu tư. T+1 vs T+2 với họ là rất khác nhau.
+
+**3. MDR và transparency**
+
+Merchant không thích bị ẩn phí. Họ muốn biết chính xác mỗi giao dịch mất bao nhiêu.
+
+**4. Dashboard và reporting**
+
+Merchant cần biết:
+- Hôm nay thu bao nhiêu?
+- Settlement đang ở đâu?
+- Chargeback nào đang pending?
+- Giao dịch nào failed và lý do gì?
+
+**5. Hỗ trợ khi có vấn đề**
+
+Khi có sự cố (giao dịch failed bất thường, settlement trễ), merchant muốn được phản hồi **trong vòng 1 giờ**, không phải 24 giờ.
+
+### 11.2 Lý do merchant rời bỏ provider
 
 ```
-- Secret key chỉ dùng ở server-side, KHÔNG expose ở frontend
-- Hỗ trợ key rotation (tạo key mới, vô hiệu hóa key cũ)
-- Key có prefix để phân biệt môi trường:
-  pk_test_xxx / sk_test_xxx  → Sandbox
-  pk_live_xxx / sk_live_xxx  → Production
-- Log mọi API call với key nào gọi
-```
+Xếp hạng phổ biến:
 
-### 7.3 Fraud Detection
+#1: Success rate thấp / Tỷ lệ decline cao
+    → Mất doanh thu trực tiếp
 
-Các signal phổ biến để phát hiện fraud:
+#2: MDR cao hơn đối thủ
+    → Sau khi so sánh, merchant chuyển provider
 
-```
-- Nhiều giao dịch failed liên tiếp (card testing)
-- Số tiền bất thường (quá lớn so với lịch sử)
-- Nhiều giao dịch từ cùng IP/device ngắn thời gian
-- Địa chỉ billing và shipping khác xa nhau
-- Merchant mới + transaction lớn ngay lập tức
-- Chargeback rate > 1%
+#3: Settlement trễ / Không minh bạch
+    → Dòng tiền bị ảnh hưởng
+
+#4: Hỗ trợ chậm
+    → Khi có sự cố, merchant cần phản hồi nhanh
+
+#5: Dashboard / API tệ
+    → Khó tích hợp, khó theo dõi
 ```
 
 ---
 
-## 8. Merchant Lifecycle — Tổng quan
+## 12. Merchant Segments trong thực tế Việt Nam
 
-```
-                    ┌──────────────┐
-                    │  REGISTERED  │ ← Merchant điền form
-                    └──────┬───────┘
-                           │
-                    ┌──────▼───────┐
-                    │ UNDER REVIEW │ ← KYC/KYB đang xét duyệt
-                    └──────┬───────┘
-                    ┌──────┴───────┐
-                    │   REJECTED   │ ← Không đủ điều kiện
-                    └──────────────┘
-                           │ Approved
-                    ┌──────▼───────┐
-                    │    ACTIVE    │ ← Đang hoạt động bình thường
-                    └──────┬───────┘
-              ┌────────────┼────────────┐
-              │            │            │
-       ┌──────▼───┐  ┌─────▼──────┐  ┌─▼──────────┐
-       │SUSPENDED │  │UNDER WATCH │  │  DORMANT   │
-       │(tạm khóa)│  │(cảnh báo)  │  │(không dùng)│
-       └──────┬───┘  └─────┬──────┘  └────────────┘
-              │             │
-              └──────┬──────┘
-                     │
-              ┌──────▼───────┐
-              │  TERMINATED  │ ← Đóng vĩnh viễn
-              └──────────────┘
-```
+### 12.1 Đặc điểm thị trường Việt Nam
 
----
+- **QR Code** là phương thức tăng trưởng nhanh nhất (hỗ trợ bởi chính sách không dùng tiền mặt của NHNN)
+- **NAPAS** là hạ tầng thanh toán nội địa, QR NAPAS có MDR ưu đãi
+- Nhiều merchant vừa và nhỏ vẫn ngại vì không hiểu cơ chế phí và settlement
+- **Ví điện tử** (Momo, ZaloPay, VNPay) cạnh tranh mạnh với payment gateway truyền thống
 
-## 9. Checklist khi build Merchant System
+### 12.2 Phân loại merchant theo ngành ở Việt Nam
 
-### Thiết kế
+**F&B (Food & Beverage)**
+- Volume cao, giá trị trung bình thấp (50,000 – 200,000đ/giao dịch)
+- QR là chính, POS phụ
+- Quan tâm nhiều đến: tốc độ in receipt, tỷ lệ thành công, MDR thấp
+- Pain point: Peak hours (12h, 18-19h) → cần hệ thống ổn định
 
-- [ ] Phân biệt rõ Merchant entity và User account (một merchant có thể nhiều user)
-- [ ] Thiết kế multi-currency từ đầu nếu cần
-- [ ] Tách biệt môi trường sandbox và production ngay từ đầu
+**Retail / Fashion**
+- Volume trung bình, giá trị cao hơn
+- Cần omnichannel: vừa có POS tại shop, vừa có online
+- Quan tâm: reconciliation dễ dàng, báo cáo tổng hợp
 
-### Tài chính
+**E-commerce**
+- Hoàn toàn online, cần tích hợp API
+- Rủi ro fraud cao hơn → cần 3DS, risk scoring
+- Quan tâm: success rate, checkout experience mượt mà
 
-- [ ] Mọi phép tính tiền dùng `DECIMAL`, tuyệt đối không dùng `FLOAT`
-- [ ] Lưu cả `gross_amount`, `fee_amount`, `net_amount` — không tính lại từ rate
-- [ ] Audit log cho mọi thay đổi về số dư và settlement
+**Travel / Vé máy bay / Khách sạn**
+- Giá trị giao dịch cao (vài triệu đến vài chục triệu)
+- Thời gian giữa thanh toán và dùng dịch vụ dài → chargeback risk cao
+- Cần hold payment / pre-authorization
 
-### API
-
-- [ ] Implement idempotency key cho mọi write endpoint
-- [ ] Version API từ đầu (`/v1/`)
-- [ ] Rate limiting theo merchant ID
-- [ ] Webhook có retry + signature verification
-
-### Bảo mật
-
-- [ ] Không log sensitive data (card number, secret key)
-- [ ] API key có thể revoke ngay lập tức
-- [ ] Mọi action quan trọng cần audit trail
+**Giáo dục / Học phí**
+- Thanh toán theo kỳ, giá trị lớn
+- Cần installment (trả góp) hoặc partial payment
+- Ít chargeback
 
 ---
 
-## 10. Tóm tắt
+## 13. Tổng kết — Mental Model cho Merchant Domain
+
+### Nhìn merchant như thế nào cho đúng?
 
 ```
-Merchant = Đơn vị bán hàng nhận thanh toán qua hệ thống payment
+Merchant là KHÁCH HÀNG B2B của bạn.
+Họ trả MDR để bạn giải quyết vấn đề cho họ:
+  → Nhận tiền từ khách hàng một cách an toàn
+  → Không cần tự xây dựng hạ tầng thanh toán
+  → Tập trung vào kinh doanh cốt lõi
 
-Vòng đời:  Đăng ký → KYC → Active → Giao dịch → Settlement
-
-Dòng tiền: Customer thanh toán → Gateway giữ → Settlement → Ngân hàng merchant
-
-Key concepts:
-  MID       — Mã định danh merchant
-  MCC       — Mã ngành nghề
-  MDR       — Phí % trên giao dịch
-  Settlement — Chuyển tiền định kỳ về tài khoản
-  Chargeback — Khách hàng khiếu nại, bị trừ tiền bắt buộc
-  KYC/KYB   — Xác minh danh tính trước khi hoạt động
-  Webhook   — Hệ thống chủ động notify merchant khi có event
+Bạn kiếm tiền khi: Merchant thành công → volume cao → MDR nhiều hơn
+Bạn mất tiền khi: Chargeback, fraud, merchant rời bỏ
 ```
+
+### Framework để hiểu bất kỳ tình huống nào
+
+Khi gặp bất kỳ vấn đề nào trong merchant domain, hỏi 3 câu:
+
+**1. Ai chịu rủi ro ở đây?**
+→ Merchant? Provider? Acquirer? Customer?
+
+**2. Dòng tiền đi như thế nào?**
+→ Tiền từ customer → qua ai → giữ ở đâu → đến merchant khi nào?
+
+**3. Ai có thể bị thiệt hại nếu xảy ra sự cố?**
+→ Hiểu điều này = hiểu tại sao có rolling reserve, chargeback fee, KYB, v.v.
+
+---
+
+### Bảng thuật ngữ nhanh
+
+| Thuật ngữ | Ý nghĩa một câu |
+|---|---|
+| **Merchant** | Đơn vị bán hàng, nhận tiền qua hệ thống payment |
+| **Acquirer** | Ngân hàng đứng ra bảo lãnh cho merchant với card network |
+| **Issuer** | Ngân hàng phát hành thẻ cho customer |
+| **MDR** | Phí % merchant trả trên mỗi giao dịch thành công |
+| **Settlement** | Chuyển tiền từ merchant account về ngân hàng của merchant |
+| **Rolling Reserve** | Tiền giữ lại làm quỹ bảo hiểm, trả lại sau 90 ngày |
+| **Chargeback** | Khách hàng khiếu nại ngân hàng, bắt buộc hoàn tiền |
+| **Friendly Fraud** | Customer nhận hàng rồi vẫn khiếu nại để lấy lại tiền |
+| **KYC/KYB** | Xác minh danh tính merchant trước khi cho phép hoạt động |
+| **UBO** | Người thực sự kiểm soát doanh nghiệp (đằng sau các lớp công ty) |
+| **MID** | Mã định danh duy nhất của merchant trong hệ thống |
+| **MCC** | Mã ngành nghề 4 chữ số, ảnh hưởng đến MDR và rủi ro |
+| **MATCH List** | Blacklist toàn cầu của card network cho merchant bị terminate |
+| **Underwriting** | Quy trình thẩm định rủi ro trước khi approve merchant |
+| **Interchange** | Phí từ acquirer trả cho issuer trên mỗi giao dịch |
+| **Success Rate** | % giao dịch thành công, chỉ số quan trọng nhất với merchant |
