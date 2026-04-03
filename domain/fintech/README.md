@@ -1,1197 +1,1143 @@
-# 💸 Fintech Domain — Business & Technical Deep Dive
+# 💸 Fintech Domain — Business Deep Dive
 
-> Tài liệu này bao quát toàn bộ **Fintech core domains**: Wallet & Balance System, Reconciliation, và Lending/BNPL. Mỗi phần đi song song cả business (nghiệp vụ, tại sao) và technical (thiết kế hệ thống, data model).
-
----
-
-## PHẦN 1: BỨC TRANH TỔNG THỂ FINTECH
-
-### 1.1 Fintech là gì — và rộng đến đâu?
-
-**Fintech (Financial Technology)** là ứng dụng công nghệ vào dịch vụ tài chính. Không phải một ngành — mà là **một tập hợp các domain** giải quyết bài toán khác nhau trong tài chính.
-
-```
-                        FINTECH
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-   PAYMENTS           LENDING            WEALTH MGMT
-   ────────           ───────            ──────────
-   Payment Gateway    Consumer Loan      Robo-advisor
-   Wallet/E-money     BNPL               Stock Trading
-   Money Transfer     SME Lending        Crypto
-   QR/POS             Mortgage           Insurance
-        │                  │
-   BANKING             INFRASTRUCTURE
-   ───────             ──────────────
-   Neobank             KYC/Identity
-   Core Banking        Fraud Detection
-   Open Banking        Reconciliation
-   BaaS                Compliance/AML
-```
-
-### 1.2 Tại sao Fintech phức tạp hơn các domain khác?
-
-```
-Domain thông thường:       Fintech:
-─────────────────────      ─────────────────────────────
-Bug → Fix lại              Bug → Có thể mất tiền thật
-Downtime → Phiền phức      Downtime → Mất giao dịch, vi phạm SLA
-Data sai → Sửa được        Data sai → Sai số dư → Kiện tụng
-Scale → Thêm server        Scale → Cần đảm bảo consistency tuyệt đối
-```
-
-**Ba tính chất bất khả xâm phạm trong Fintech:**
-
-```
-1. CORRECTNESS (Chính xác):
-   Số tiền phải luôn đúng, không được sai dù 1 đồng
-
-2. CONSISTENCY (Nhất quán):
-   Tổng tiền trong hệ thống phải luôn bằng nhau
-   Tiền không tự nhiên sinh ra hay mất đi
-
-3. AUDITABILITY (Có thể kiểm tra):
-   Mọi giao dịch đều có dấu vết, ai làm gì lúc nào
-```
+> Tài liệu này đi thật sâu vào **business** của 3 domain cốt lõi trong Fintech: Wallet & Balance System, Reconciliation, và Lending/BNPL. Mỗi phần giải thích tại sao nó tồn tại, nó vận hành như thế nào trong thực tế, ai kiếm tiền từ đâu, và những vấn đề business thực sự mà các công ty đang đối mặt.
 
 ---
 
-## PHẦN 2: WALLET & BALANCE SYSTEM
+## PHẦN 1 — BỨC TRANH LỚN: FINTECH HOẠT ĐỘNG NHƯ THẾ NÀO?
 
-### 2.1 Wallet là gì trong Fintech?
+### 1.1 Tại sao Fintech tồn tại?
 
-**Wallet (Ví điện tử)** là hệ thống lưu trữ và quản lý **số dư tiền của người dùng** dưới dạng điện tử, cho phép thực hiện các giao dịch tài chính mà không cần tiền mặt hoặc tài khoản ngân hàng trực tiếp.
-
-**Wallet khác tài khoản ngân hàng thế nào?**
-
-| | Tài khoản ngân hàng | Ví điện tử |
-|---|---|---|
-| Ai cấp phép | NHNN cấp phép ngân hàng | NHNN cấp phép TGTT (Trung gian thanh toán) |
-| Bảo hiểm tiền gửi | Có (tối đa 125 triệu) | Không |
-| Lãi suất | Có (tiết kiệm) | Thường không |
-| Hạn mức | Không giới hạn | Giới hạn theo quy định (thường 100tr VND) |
-| KYC | Đầy đủ, mặt đối mặt | eKYC, đơn giản hơn |
-| Ví dụ VN | Vietcombank, Techcombank | Momo, ZaloPay, VNPay |
-
-### 2.2 Các loại Wallet
-
-#### Prepaid Wallet (Ví trả trước)
-Nạp tiền trước, dùng dần. Số dư không được âm.
-```
-Ví dụ: Momo, ZaloPay, ShopeePay
-Luồng: Nạp tiền từ ngân hàng → Số dư tăng → Dùng để thanh toán → Số dư giảm
-```
-
-#### Postpaid Wallet / Credit Wallet
-Chi tiêu trước, trả sau. Có hạn mức tín dụng.
-```
-Ví dụ: Ví tín dụng, BNPL wallet
-Luồng: Dùng để thanh toán → Nợ tăng → Trả nợ vào cuối kỳ
-```
-
-#### Custodial vs Non-custodial (chủ yếu trong crypto)
-```
-Custodial: Bên thứ 3 giữ private key thay bạn (Binance, Coinbase)
-Non-custodial: Bạn tự giữ private key (MetaMask)
-```
-
-### 2.3 Double-Entry Ledger — Nền tảng của mọi Wallet
-
-Đây là **khái niệm quan trọng nhất** cần nắm khi thiết kế Wallet. Tương tự kế toán doanh nghiệp, nhưng áp dụng ở cấp độ từng giao dịch người dùng.
-
-**Nguyên tắc:** Tiền không tự nhiên sinh ra hay mất đi. Mỗi giao dịch phải có nguồn tiền ĐI và nơi tiền ĐẾN.
+Ngân hàng truyền thống tồn tại hàng trăm năm nhưng có những vấn đề mà họ không thể hoặc không muốn giải quyết:
 
 ```
-Ví dụ: User A nạp 100,000đ vào ví từ ngân hàng
+VẤN ĐỀ CỦA NGÂN HÀNG TRUYỀN THỐNG:
 
-KHÔNG làm thế này (single-entry):
-  UPDATE wallets SET balance = balance + 100000 WHERE user_id = A
-  → Không biết tiền từ đâu, không thể audit
+Tốc độ:
+  Mở tài khoản → 3-5 ngày làm việc
+  Chuyển khoản quốc tế → 3-7 ngày
+  Vay tiêu dùng nhỏ → 1-2 tuần thẩm định
 
-LÀM THẾ NÀY (double-entry):
-  DEBIT  (trừ): Tài khoản ngân hàng của A    -100,000đ
-  CREDIT (cộng): Ví điện tử của A            +100,000đ
-  → Tổng thay đổi = 0, tiền chỉ di chuyển, không mất
+Chi phí:
+  Phí chuyển tiền nội địa: vài chục nghìn đồng
+  Phí chuyển tiền quốc tế: 2-5% giá trị
+  Chi phí vận hành chi nhánh: cực kỳ cao
+
+Tiếp cận:
+  Cần có tài sản thế chấp để vay
+  Phải đến chi nhánh để làm thủ tục
+  Người thu nhập thấp, không có lịch sử tín dụng → bị loại
+
+Fintech giải quyết những vấn đề này bằng công nghệ:
+  → Mở tài khoản trong 5 phút qua app
+  → Chuyển tiền tức thì với phí gần bằng 0
+  → Vay tiền trong vài phút với alternative data
 ```
 
-**Chart of Accounts trong Wallet System:**
+### 1.2 Ba trụ cột của Fintech
 
 ```
-ASSET ACCOUNTS (Tài sản — tiền thực):
-  1001: Float Account (Tiền thực tại ngân hàng đối tác)
-  1002: Settlement Pending
-
-LIABILITY ACCOUNTS (Nợ phải trả — tiền của user):
-  2001: User Wallets (Tổng số dư của tất cả user)
-  2002: Merchant Wallets
-  2003: Pending Transactions
-
-REVENUE ACCOUNTS:
-  4001: Transaction Fees
-  4002: FX Spread (nếu có đổi tiền tệ)
-
-EXPENSE ACCOUNTS:
-  5001: Bank Charges
-  5002: Refunds
+┌─────────────────────────────────────────────────────────┐
+│                                                          │
+│   MOVE MONEY          STORE MONEY         GROW MONEY    │
+│   (Di chuyển tiền)    (Lưu trữ tiền)      (Sinh lời)   │
+│                                                          │
+│   Payment             Wallet/E-money       Lending      │
+│   Transfer            Deposit              Investing    │
+│   Remittance          Savings              Insurance    │
+│                                                          │
+│        ↕                  ↕                    ↕        │
+│              RECONCILIATION (Đối soát)                  │
+│         Đảm bảo mọi thứ chính xác và khớp nhau         │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**Nguyên tắc bất biến:**
-```
-SUM(Asset Accounts) = SUM(Liability Accounts) + SUM(Equity)
+Reconciliation không phải một sản phẩm — nó là **hệ thống thần kinh nền tảng** đảm bảo Move Money và Store Money hoạt động đúng.
 
-Nếu công thức này không cân bằng → Có bug hoặc fraud trong hệ thống
-```
+---
 
-### 2.4 Các loại giao dịch trong Wallet
+## PHẦN 2 — WALLET & BALANCE SYSTEM
 
-```
-TOPUP (Nạp tiền):
-  Debit:  Float Account (tiền từ bank vào hệ thống)   +100,000
-  Credit: User Wallet A                                +100,000
-  → Số dư tổng hệ thống tăng 100,000
+### 2.1 Ví điện tử kiếm tiền từ đâu?
 
-PAYMENT (Thanh toán):
-  Debit:  User Wallet A                               -50,000
-  Credit: Merchant Wallet B                           +50,000
-  → Số dư tổng hệ thống không đổi (chỉ di chuyển)
+Đây là câu hỏi đầu tiên bất kỳ BA nào cũng cần hiểu. Tưởng đơn giản nhưng thực ra khá phức tạp.
 
-TRANSFER P2P (Chuyển tiền):
-  Debit:  User Wallet A                               -30,000
-  Credit: User Wallet B                               +30,000
-  → Số dư tổng hệ thống không đổi
+**Vấn đề cốt lõi:** Chuyển tiền P2P, thanh toán QR — margin rất mỏng hoặc bằng 0. Vậy tại sao các công ty ví lại đốt hàng trăm triệu USD để có thêm user?
 
-WITHDRAWAL (Rút tiền):
-  Debit:  User Wallet A                               -200,000
-  Credit: Float Account (tiền ra khỏi hệ thống)      -200,000
-  → Số dư tổng hệ thống giảm 200,000
-
-FEE (Thu phí):
-  Debit:  User Wallet A                               -1,000
-  Credit: Revenue Account (Fee Income)                +1,000
-  → Tiền di chuyển từ user sang revenue của platform
-```
-
-### 2.5 Balance Architecture — Thiết kế số dư
-
-Không phải chỉ có một con số "balance" — trong thực tế cần nhiều loại số dư:
+Câu trả lời: **Ví chỉ là cửa ngõ — tiền thật đến từ các dịch vụ phía sau.**
 
 ```
-TOTAL BALANCE (Tổng số dư):
-  Tất cả tiền trong ví, bao gồm cả tiền đang bị giữ
+REVENUE STREAMS CỦA VÍ ĐIỆN TỬ:
 
-AVAILABLE BALANCE (Số dư khả dụng):
-  Tiền có thể dùng ngay
-  = Total Balance - Pending/Reserved Amount
+1. TRANSACTION FEES (Phí giao dịch) — Thấp, cạnh tranh cao
+   MDR từ merchant:        0.1 – 1.5% mỗi giao dịch
+   Phí rút tiền:          Thường miễn phí hoặc rất thấp
+   Phí chuyển tiền:       Ngày càng về 0 do cạnh tranh
+   → Margin rất mỏng, cần volume cực lớn mới có lãi
 
-PENDING BALANCE (Số dư đang xử lý):
-  Tiền đang trong giao dịch chưa hoàn tất
-  Ví dụ: Vừa nhận chuyển khoản nhưng chưa settle
+2. FLOAT INCOME (Lãi từ tiền người dùng gửi vào)
+   Toàn bộ số dư của user được gom vào tài khoản ngân hàng
+   → Gửi kỳ hạn hoặc đầu tư ngắn hạn
+   → Lãi suất ~5-7%/năm trên tổng float
 
-RESERVED BALANCE (Số dư bị giữ):
-  Tiền bị hold cho một mục đích cụ thể
-  Ví dụ: Đã tạo lệnh thanh toán nhưng chưa confirm
+   Ví dụ MoMo: 31 triệu user, trung bình 100,000đ/người
+   → Float ~ 3,100 tỷ đồng
+   → Lãi 6%/năm → ~186 tỷ đồng/năm từ float alone
+
+   Lưu ý: NHNN quy định tiền người dùng phải được bảo quản
+   ở tài khoản phong tỏa riêng, không được dùng tự do
+
+3. VALUE-ADDED SERVICES (Dịch vụ giá trị gia tăng) — Đây mới là core
+   Lending (cho vay):      NIM 8-15%, margin cực cao
+   Insurance:              Commission 10-20% phí bảo hiểm
+   Investment:             Management fee 0.5-1%/năm AUM
+   Bill payment:           Phí tiện ích, hoa hồng từ nhà cung cấp
+   Voucher/Deals:          Commission từ merchant promotion
+   Remittance:             Spread FX + fixed fee
+
+4. ADVERTISING & DATA
+   Hiển thị quảng cáo targeted cho 30+ triệu user
+   Bán insights (ẩn danh) cho merchant, brand
+   White-label analytics cho đối tác
+
+5. B2B/API SERVICES
+   Cung cấp payment infrastructure cho doanh nghiệp khác
+   White-label wallet cho brand
 ```
 
-**Ví dụ thực tế:**
+**Case study thực tế — MoMo:**
+
+MoMo đạt lợi nhuận lần đầu tiên vào năm 2024 sau khi xử lý 5.5 tỷ giao dịch chỉ trong Q1/2025, xác nhận rằng mô hình super app cuối cùng cũng có thể profitable — nhưng phải mất nhiều năm.
+
+Theo Kapronasia, dù ví điện tử ở các nước đang phát triển là mảng kinh doanh margin thấp, MoMo đã đang xây dựng hệ sinh thái để cung cấp các dịch vụ margin cao hơn — ví hiện là đối tác của hơn 50 ngân hàng và công ty tài chính, bảo hiểm. Đây chính là chiến lược: dùng ví để thu thập data và tạo quan hệ, rồi monetize qua lending và insurance.
+
+**Tại sao các ví vẫn thua lỗ nhiều năm liền?**
+
+Báo cáo tài chính cho thấy ZaloPay ghi nhận thua lỗ hơn 29.1 tỷ đồng trong năm 2023, dù đã giảm gần một nửa so với 2022. MoMo đạt doanh thu hơn 392 triệu USD năm 2023 nhưng vẫn lỗ sau thuế hơn 8.3 tỷ đồng. Trong khi đó VNPay và Payoo là những ví hiếm hoi đạt tăng trưởng dương cả doanh thu lẫn lợi nhuận.
+
+Lý do thua lỗ không phải vì mô hình tệ — mà vì đang trong giai đoạn **burn money để giành thị phần**:
 ```
-User có:
-  Total Balance:     500,000đ
-  Pending (nhận):   +100,000đ  (chuyển khoản đang vào)
-  Reserved:         -200,000đ  (đang hold cho đơn hàng)
+Cashback/voucher cho user mới:        Chi phí CAC cao
+Trợ giá phí giao dịch về 0:          Mất MDR
+Miễn phí rút tiền:                   Tốn phí ngân hàng
+Marketing massive:                    Brand awareness
 
-  Available Balance = 500,000 - 200,000 = 300,000đ
-  → User chỉ được dùng 300,000đ, dù total là 500,000đ
-```
-
-### 2.6 Data Model — Wallet System
-
-```sql
--- Accounts: Mỗi "ví" hay "tài khoản" trong hệ thống
-CREATE TABLE accounts (
-    id              UUID PRIMARY KEY,
-    account_ref     VARCHAR(50) UNIQUE NOT NULL,  -- ACC-USER-00123
-    account_type    VARCHAR(30) NOT NULL,
-    -- user_wallet | merchant_wallet | float | fee_revenue | ...
-    owner_id        UUID,            -- user_id hoặc merchant_id
-    currency        CHAR(3) NOT NULL DEFAULT 'VND',
-    status          VARCHAR(20) DEFAULT 'active',
-    -- active | suspended | closed
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Ledger entries: MỌI giao dịch đều tạo ít nhất 2 dòng ở đây
--- Đây là bảng KHÔNG BAO GIỜ được UPDATE hay DELETE
-CREATE TABLE ledger_entries (
-    id              UUID PRIMARY KEY,
-    entry_ref       VARCHAR(100) UNIQUE NOT NULL,
-    transaction_id  UUID NOT NULL REFERENCES transactions(id),
-    account_id      UUID NOT NULL REFERENCES accounts(id),
-    entry_type      VARCHAR(10) NOT NULL, -- 'debit' | 'credit'
-    amount          BIGINT NOT NULL,      -- Lưu bằng đơn vị nhỏ nhất (đồng)
-    -- KHÔNG dùng DECIMAL/FLOAT để tránh lỗi làm tròn
-    currency        CHAR(3) NOT NULL DEFAULT 'VND',
-    balance_after   BIGINT NOT NULL,      -- Số dư sau khi entry này
-    description     TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    -- KHÔNG có updated_at — ledger là immutable
-);
-
--- Transactions: Nhóm các ledger entries lại thành một giao dịch
-CREATE TABLE transactions (
-    id              UUID PRIMARY KEY,
-    transaction_ref VARCHAR(100) UNIQUE NOT NULL,
-    transaction_type VARCHAR(50) NOT NULL,
-    -- topup | payment | transfer | withdrawal | fee | refund
-    status          VARCHAR(30) NOT NULL,
-    -- pending | processing | completed | failed | reversed
-    initiator_id    UUID,           -- Ai tạo giao dịch
-    amount          BIGINT NOT NULL,
-    currency        CHAR(3) NOT NULL DEFAULT 'VND',
-    description     TEXT,
-    metadata        JSONB,
-    idempotency_key VARCHAR(255) UNIQUE, -- Tránh duplicate
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at    TIMESTAMPTZ
-);
-
--- Account Balances: Cache số dư hiện tại (tính từ ledger)
-CREATE TABLE account_balances (
-    account_id      UUID PRIMARY KEY REFERENCES accounts(id),
-    total_balance   BIGINT NOT NULL DEFAULT 0,
-    reserved_amount BIGINT NOT NULL DEFAULT 0,
-    -- available = total - reserved (tính khi cần, không lưu riêng)
-    last_entry_id   UUID,           -- Entry cuối cùng tạo ra balance này
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+Logic: Giành user trước → Monetize sau
+→ Giống Grab, Shopee đã làm trước đó
 ```
 
-**Tại sao lưu amount bằng BIGINT (đồng) thay vì DECIMAL?**
-```
-DECIMAL(15,2) lưu 1.10đ → Thực ra là 1.0999999... trong IEEE 754
-→ Sau hàng triệu giao dịch, sai số tích lũy
+### 2.2 Wallet User Journey — Vòng đời người dùng ví
 
-BIGINT lưu 110 (xu) → Chính xác tuyệt đối
-→ Quy ước: 1đ VND = 1 đơn vị, hoặc 1đ = 100 xu (nếu có phần nhỏ)
-```
-
-### 2.7 Race Condition — Vấn đề nguy hiểm nhất
-
-**Kịch bản nguy hiểm:**
+Hiểu user journey giúp hiểu tại sao mỗi tính năng tồn tại:
 
 ```
-User có 100,000đ trong ví.
-Đồng thời 2 request thanh toán 80,000đ:
+[ACQUISITION — Thu hút user mới]
+  Cashback 20% lần đầu dùng
+  Tặng điểm khi giới thiệu bạn
+  Tích hợp sẵn vào Grab, Shopee, các app phổ biến
+  → Chi phí CAC: 50,000 – 200,000đ/user tùy thị trường
 
-Thread 1:                    Thread 2:
-Read balance: 100,000        Read balance: 100,000
-Check: 100k >= 80k? YES      Check: 100k >= 80k? YES
-...                          Deduct 80k → balance = 20,000
-Deduct 80k → balance = 20,000
-→ Cả hai đều thành công!
-→ Tổng chi: 160,000đ > 100,000đ ban đầu
-→ Ví bị âm → LỖ TIỀN THẬT
+[ACTIVATION — User dùng lần đầu]
+  Đăng ký → Liên kết tài khoản ngân hàng → Nạp tiền → Thanh toán
+  Friction phải cực thấp: toàn bộ < 5 phút
+  eKYC: chụp CCCD + selfie → Auto verify
+
+[ENGAGEMENT — Dùng thường xuyên]
+  Daily habit loop:
+    Trả cà phê → Nhận cashback → Thấy deal → Mua thêm
+  Push notification: "Deal hôm nay: -30% tại Highlands"
+  Gamification: Vòng quay may mắn, streak rewards
+  → Mục tiêu: User mở app ít nhất 3-5 lần/tuần
+
+[MONETIZATION — Kiếm tiền từ user]
+  Khi user đã tin tưởng và dùng thường xuyên:
+  → Offer vay tiền ("Bạn được vay đến 5 triệu, lãi 0% tháng đầu")
+  → Bán bảo hiểm ("Bảo hiểm tai nạn chỉ 15,000đ/tháng")
+  → Mời đầu tư ("Gửi tiết kiệm lãi 7.5%/năm")
+  → Bán vé, deal ("Flash sale Vietjet -50%")
+
+[RETENTION — Giữ chân user]
+  Loyalty points: tích lũy, đổi quà
+  Tier system: Silver → Gold → Platinum
+  Switching cost: điểm tích lũy mất nếu rời bỏ
+  Ecosystem lock-in: bill payment history, saved payees
 ```
 
-**Giải pháp 1: Optimistic Locking**
+### 2.3 Tại sao Balance System phức tạp hơn người nghĩ?
 
-```sql
--- Khi update balance, check version không thay đổi
-UPDATE account_balances
-SET total_balance = total_balance - 80000,
-    version = version + 1,
-    updated_at = NOW()
-WHERE account_id = 'ACC-123'
-  AND version = 5          -- version lúc đọc
-  AND total_balance >= 80000;
+Nhiều người nghĩ balance chỉ là một con số. Thực tế không phải vậy.
 
--- Nếu affected rows = 0 → Version đã thay đổi → Retry
--- Nếu affected rows = 1 → Thành công
-```
-
-**Giải pháp 2: Database-level Locking (SELECT FOR UPDATE)**
-
-```sql
-BEGIN;
-  SELECT total_balance, reserved_amount
-  FROM account_balances
-  WHERE account_id = 'ACC-123'
-  FOR UPDATE;  -- Lock row này lại
-
-  -- Kiểm tra available balance
-  -- Nếu đủ → tạo ledger entry + update balance
-  -- Nếu không đủ → ROLLBACK
-
-COMMIT;
--- Lock giải phóng sau COMMIT/ROLLBACK
-```
-
-**Giải pháp 3: Idempotency Key**
+**Vấn đề 1: Tiền "đang trên đường"**
 
 ```
-Mọi giao dịch đều có idempotency_key duy nhất.
-Nếu cùng key được gửi 2 lần → Chỉ xử lý 1 lần, lần sau trả response cũ.
+User A chuyển 500,000đ cho User B lúc 11:59 PM ngày 31/12:
+  → Ngày 31/12: Trừ 500,000đ từ A
+  → Ngày 01/01 (ngày hôm sau): Cộng 500,000đ cho B
 
-Client: POST /transfer
-        Idempotency-Key: TXN-USER-123-ORDER-456-20241201
+Trong khoảng thời gian này, tiền ở đâu?
+→ Nằm trong "Suspense Account" / "In-transit Account"
+→ Phải track chính xác, không được mất
 
-Server lần 1: Key chưa tồn tại → Xử lý → Lưu key + result
-Server lần 2: Key đã tồn tại → Trả result cũ → Không xử lý lại
+Nếu hệ thống crash lúc 12:01 AM:
+→ A đã bị trừ tiền
+→ B chưa nhận được
+→ Tiền biến mất nếu không xử lý đúng
 ```
 
-### 2.8 Transaction State Machine
+**Vấn đề 2: Một user có thể có nhiều loại balance**
 
 ```
-                    ┌─────────┐
-                    │ PENDING │ ← Giao dịch vừa được tạo
-                    └────┬────┘
-                         │
-                    ┌────▼────┐
-                    │PROCESSING│ ← Đang xử lý (reserve balance)
-                    └────┬────┘
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-        ┌──────────┐ ┌────────┐ ┌────────┐
-        │COMPLETED │ │ FAILED │ │EXPIRED │
-        └────┬─────┘ └────────┘ └────────┘
-             │
-        ┌────▼─────┐
-        │ REVERSED │ ← Giao dịch bị đảo ngược (refund, dispute)
-        └──────────┘
+User có tổng 1,000,000đ trong ví, nhưng:
 
-Quy tắc:
-  PENDING → PROCESSING → COMPLETED ✓ (happy path)
-  PENDING → PROCESSING → FAILED    ✓ (release reserved balance)
-  PENDING → EXPIRED                ✓ (timeout)
-  COMPLETED → REVERSED             ✓ (refund/chargeback)
-  COMPLETED → COMPLETED            ✗ KHÔNG được phép
-  FAILED → COMPLETED               ✗ KHÔNG được phép
+Available balance:    600,000đ  (có thể dùng ngay)
+Reserved balance:     200,000đ  (đang giữ cho order đang pending)
+Pending balance:      150,000đ  (chuyển khoản chưa settle)
+Cashback pending:      50,000đ  (cashback chưa confirm)
+
+Tổng:               1,000,000đ
+
+Nếu user cố thanh toán 800,000đ → Hệ thống phải từ chối
+vì Available chỉ có 600,000đ — dù Total là 1,000,000đ
 ```
 
-### 2.9 Float Management — Tiền thật ở đâu?
-
-Khi 1 triệu user mỗi người có 100,000đ trong ví → Hệ thống đang "giữ" 100 tỷ đồng tiền thật.
-
-**Tiền này để ở đâu?**
+**Vấn đề 3: Negative balance — Khi nào được phép?**
 
 ```
-Toàn bộ tiền user gửi vào ví
-    → Được gom vào tài khoản ngân hàng tập trung
-       gọi là FLOAT ACCOUNT (hoặc Escrow Account)
-    → Phải tách biệt hoàn toàn với tiền vận hành của công ty
-    → NHNN yêu cầu: Tiền người dùng phải được đảm bảo 1:1
-       (không được dùng để đầu tư hay vận hành)
+Prepaid wallet: KHÔNG được phép negative
+  → Mọi transaction phải check available balance trước
 
-Bất cứ lúc nào:
-  SUM(tất cả số dư ví người dùng) = Số tiền trong Float Account
+Credit wallet / Overdraft: Được phép negative đến giới hạn
+  → Hạn mức tín dụng là một dạng lending tích hợp vào ví
 
-Nếu không cân bằng → Vi phạm quy định → Có thể mất giấy phép
+BNPL wallet:
+  → User "mua trước" → Balance âm ngay → Trả dần sau
+  → Phức tạp hơn vì phải track lịch trả và tính lãi
+```
+
+**Vấn đề 4: Concurrency — Hai giao dịch đồng thời**
+
+```
+Tình huống thực tế:
+  User nhấn "Thanh toán 500k" trên app
+  Đồng thời có một autopay bill 500k đang chạy
+  User chỉ có 600k trong ví
+
+Nếu xử lý không đúng:
+  → Cả hai đều check balance: thấy 600k > 500k → OK
+  → Cả hai đều trừ 500k
+  → Balance = 600k - 500k - 500k = -400k
+  → Ví bị âm 400k → CÔNG TY LỖ TIỀN THẬT
+
+Đây không phải lý thuyết — đây là lỗi thực sự xảy ra
+ở nhiều hệ thống payment nếu không xử lý concurrency đúng
+```
+
+### 2.4 Float Management — Bài toán tiền tỷ
+
+Khi bạn build một ví có 1 triệu user, mỗi user giữ trung bình 500,000đ:
+
+```
+Tổng float = 500 tỷ đồng
+
+Đây là tiền THẬT, đang nằm trong tài khoản ngân hàng của công ty.
+Nếu công ty làm sai, 500 tỷ của user có thể mất.
+```
+
+**Bài học từ vụ sụp đổ của Synapse (2024):**
+
+Ngày 7/6/2024, hơn 100,000 khách hàng mất quyền truy cập vào tiền tiết kiệm của họ. Tiền không biến mất — nó bị chôn vùi trong mê cung các giao dịch chưa được đối soát, tiền bị thiếu hụt, và các điểm mù tài chính. Thủ phạm là Synapse, một fintech trung gian đã sụp đổ, để lại khoản thiếu hụt 85 triệu USD giữa số tiền ngân hàng đang giữ và số tiền khách hàng được nợ.
+
+Đây là minh chứng rõ ràng nhất: **Float management và Reconciliation không phải vấn đề technical — đây là vấn đề sống còn của business.**
+
+**Nguyên tắc Float Management:**
+
+```
+QUY TẮC BẤT DI BẤT DỊCH:
+
+1. Segregation (Tách biệt hoàn toàn):
+   Tiền của user ≠ Tiền vận hành của công ty
+   Nếu công ty phá sản, tiền user vẫn phải được bảo vệ
+   → NHNN yêu cầu: Tài khoản phong tỏa riêng tại ngân hàng uy tín
+
+2. 1:1 Coverage (Đảm bảo 1:1):
+   Tổng số dư tất cả ví user = Số tiền thực trong Float Account
+   Chênh lệch dù 1 đồng cũng là vấn đề nghiêm trọng
+
+3. Daily Reconciliation (Đối soát hàng ngày):
+   Mỗi ngày phải verify: Internal records = Bank statement
+   Phát hiện chênh lệch trong ngày, không để tích tụ
+
+4. Liquidity Management (Quản lý thanh khoản):
+   Đủ tiền mặt để xử lý rút tiền của user bất cứ lúc nào
+   Tránh "bank run" scenario: nhiều user rút cùng lúc
+```
+
+### 2.5 Super App Strategy — Tại sao MoMo, ZaloPay đều muốn trở thành Super App?
+
+Thị trường mobile payment Việt Nam được định giá khoảng 40.5 tỷ USD vào năm 2026. MoMo có hơn 31 triệu người dùng và 140,000 điểm thanh toán, phát triển từ một ví điện tử thành một super app được hỗ trợ bởi AI cung cấp các dịch vụ từ thanh toán hóa đơn đến giao dịch chứng khoán.
+
+**Logic của Super App Strategy:**
+
+```
+BÀI TOÁN KINH TẾ:
+
+Chi phí thu hút 1 user mới (CAC):          150,000đ
+Lifetime Value (LTV) của user chỉ dùng ví: 50,000đ/năm × 3 năm = 150,000đ
+→ Break even chỉ, không có lãi
+
+LTV khi user dùng full ecosystem:
+  Payment fee:        30,000đ/năm
+  Lending interest:  150,000đ/năm  (vay 2tr × 15% × 0.5 năm)
+  Insurance:          20,000đd/năm (commission)
+  Investment:         15,000đ/năm  (fee on 1tr AUM)
+  Deals/voucher:      10,000đ/năm  (commission)
+  ─────────────────────────────────────────
+  LTV tổng:          225,000đ/năm × 5 năm = 1,125,000đ
+→ LTV/CAC = 7.5x → Rất tốt
+
+KẾT LUẬN: Ví là loss leader để dẫn dắt user vào ecosystem
+          Profit thực đến từ lending và value-added services
+```
+
+**ZaloPay vs MoMo — Hai chiến lược khác nhau:**
+
+```
+ZALOPAY — WeChat Pay Model:
+  Leveraging Zalo (100 triệu users) → Chi phí CAC gần bằng 0
+  User của Zalo → Thêm tính năng payment vào app quen dùng
+  Giống WeChat Pay: messaging + payment trong 1 app
+  Strength: Distribution cost thấp nhất thị trường
+
+MOMO — Standalone Super App:
+  Build từ đầu, không có social network backing
+  Phải đầu tư mạnh vào marketing và cashback
+  Compensate bằng: product tốt hơn, ecosystem rộng hơn
+  Strength: Payment-first focus, deeper fintech integration
 ```
 
 ---
 
-## PHẦN 3: RECONCILIATION — ĐỐI SOÁT
+## PHẦN 3 — RECONCILIATION: XƯƠNG SỐNG CỦA FINTECH
 
-### 3.1 Reconciliation là gì và tại sao quan trọng?
+### 3.1 Tại sao Reconciliation quan trọng đến vậy?
 
-**Reconciliation (Đối soát)** là quy trình **đối chiếu, so sánh dữ liệu** giữa hai hoặc nhiều hệ thống để đảm bảo chúng khớp nhau.
+Hầu hết mọi người nghĩ Reconciliation là công việc back-office nhàm chán của kế toán. Thực tế:
 
-**Tại sao cần Reconciliation?**
+> **Reconciliation là lý do duy nhất khiến bạn có thể tin tưởng con số trong hệ thống của mình.**
 
-```
-Trong một giao dịch thanh toán, có ít nhất 3-4 hệ thống tham gia:
-  1. Hệ thống của bạn (internal)
-  2. Payment Gateway
-  3. Acquiring Bank
-  4. Card Network
+**Bối cảnh thực tế:**
 
-Mỗi hệ thống tự ghi nhận giao dịch theo cách riêng.
-Không có gì đảm bảo chúng ghi nhận giống nhau 100%.
+Những gì trông giống một giao dịch khách hàng đơn lẻ, thực tế bị phân mảnh qua nhiều nền tảng ghi nhận các giai đoạn khác nhau của cùng một giao dịch. Các file settlement bị delay và thường gom nhiều giao dịch thành một khoản thanh toán duy nhất; ngân hàng hiển thị số tiền ròng mà không có chi tiết từng giao dịch; và ngành payments toàn cầu tiếp tục phân mảnh khi các rails và ecosystem mới xuất hiện.
 
-Sự cố thực tế:
-  - Network timeout: Bạn ghi nhận "failed", Gateway ghi nhận "success"
-  - Duplicate charge: Gateway charge 2 lần, bạn chỉ biết 1 lần
-  - Settlement sai: Bank chuyển 98,500 nhưng hệ thống expect 99,000
-  - Giao dịch "ma": Có trong bank statement nhưng không có trong hệ thống
-```
+Reconciliation accounts for 30%-40% of a company's back-office labor costs. Và mặc dù các lãnh đạo tài chính đồng ý rằng automated reconciliation là crucial, nhiều công ty vẫn tiếp tục dựa vào các phương pháp thủ công hoặc batch.
 
-**Hậu quả nếu không Reconcile:**
-```
-Mất tiền (không biết)          → Thiệt hại tài chính trực tiếp
-Báo cáo tài chính sai          → Quyết định kinh doanh sai
-Vi phạm quy định               → Phạt tiền, mất giấy phép
-Khách hàng bị charge sai       → Khiếu nại, chargeback
-Merchant nhận sai tiền          → Khiếu nại, mất đối tác
-```
-
-### 3.2 Các loại Reconciliation
-
-#### Internal Reconciliation (Đối soát nội bộ)
-
-Đối chiếu giữa các bảng/hệ thống trong nội bộ:
+**Tại sao một giao dịch đơn giản lại gây ra mớ hỗn độn:**
 
 ```
-Kiểm tra 1: Transaction table vs Ledger entries
-  Mỗi transaction "completed" phải có đủ ledger entries
-  Tổng debit = Tổng credit trong mỗi transaction
+Khách hàng mua áo 300,000đ bằng thẻ Visa lúc 23:50 ngày 31/12:
 
-Kiểm tra 2: Ledger entries vs Account balances
-  Balance hiện tại của account = SUM(tất cả entries của account)
+HỆ THỐNG MERCHANT ghi nhận: 300,000đ doanh thu, ngày 31/12
+PAYMENT GATEWAY ghi nhận:   $12.90 (tỷ giá lúc đó), ngày 31/12
+ACQUIRER BANK ghi nhận:     Bank processes overnight → ngày 01/01
+CARD NETWORK (Visa):        Settlement T+2 → ngày 02/01
+BANK STATEMENT merchant:    Nhận tiền (sau phí MDR) ngày 03/01
 
-Kiểm tra 3: Tổng balance người dùng vs Float Account
-  SUM(user wallets) = Float account balance tại ngân hàng
+5 hệ thống, 5 ngày khác nhau, 2 loại tiền tệ, các amount khác nhau.
+Tất cả đều "đúng" theo góc nhìn của riêng hệ thống đó.
+→ Ai đúng? Reconciliation trả lời câu hỏi này.
 ```
 
-#### External Reconciliation (Đối soát bên ngoài)
+### 3.2 Các loại chênh lệch thực tế
 
-Đối chiếu hệ thống nội bộ với đối tác bên ngoài:
+Không phải mọi chênh lệch đều nghiêm trọng như nhau. Phân loại đúng để xử lý đúng:
 
-```
-Internal vs Payment Gateway:
-  So sánh từng giao dịch: ID, amount, status, timestamp
-
-Internal vs Bank Statement:
-  So sánh số tiền thực tế nhận/gửi với ghi nhận nội bộ
-
-Internal vs Merchant:
-  Đối chiếu số tiền đã settlement với merchant
-```
-
-### 3.3 Settlement Reconciliation — Chi tiết nhất
-
-Đây là loại reconciliation phức tạp và quan trọng nhất trong Payment.
-
-**Luồng tiền cần reconcile:**
+**Loại 1: Timing Difference (Chênh lệch thời gian) — Phổ biến nhất, ít nguy hiểm nhất**
 
 ```
-Ngày T: 1000 giao dịch thành công
-  Tổng amount: 500,000,000đ
-  Tổng fee (MDR 1.5%): 7,500,000đ
-  Expected settlement: 492,500,000đ
+Nguyên nhân:
+  Giao dịch 23:59 ngày T → Gateway ghi T, Bank ghi T+1
+  Timezone: Hệ thống UTC+0 vs hệ thống UTC+7
+  Settlement batch: Gom nhiều ngày → Một lần chuyển khoản
 
-Ngày T+1: Bank chuyển khoản về
-  Actual received: 492,350,000đ
-
-Chênh lệch: 150,000đ — đi đâu?
-  → Có thể: Phí chuyển khoản ngân hàng?
-             Tỷ giá FX rounding?
-             Một giao dịch bị tính sai fee?
-             → Phải điều tra từng dòng
+Cách xử lý:
+  Không cần lo nếu resolved trong 1-3 ngày
+  Hệ thống tự match khi settlement về
+  Alert nếu quá 5 ngày vẫn chưa match
 ```
 
-**Quy trình Reconciliation từng bước:**
+**Loại 2: Fee Discrepancy (Chênh lệch phí) — Thường xuyên, cần theo dõi**
 
 ```
-[1] DATA COLLECTION (Thu thập dữ liệu)
-    Thu thập từ tất cả nguồn:
-    - Export từ hệ thống nội bộ
-    - Download file từ Payment Gateway (CSV/SFTP)
-    - Download Bank Statement (MT940, CSV)
-    - File settlement từ Acquirer
-
-[2] DATA NORMALIZATION (Chuẩn hóa dữ liệu)
-    Vấn đề: Mỗi nguồn có format khác nhau
-    
-    Hệ thống nội bộ:
-      txn_id: TXN-20241201-ABCDE
-      amount: 150000
-      status: completed
-    
-    Gateway:
-      reference: PAY-2024-12-01-XYZ
-      gross_amount: 150000
-      net_amount: 147750
-      status: SUCCESS
-    
-    → Phải map: TXN-20241201-ABCDE ↔ PAY-2024-12-01-XYZ
-    → Chuẩn hóa về cùng format để so sánh
-
-[3] MATCHING (Khớp lệnh)
-    So sánh từng cặp giao dịch:
-    
-    MATCHED ✓: Tìm thấy trong cả hai nguồn, amount khớp
-    UNMATCHED:
-      - Có trong internal, không có trong gateway
-      - Có trong gateway, không có trong internal
-      - Có trong cả hai nhưng amount khác nhau
-      - Có trong cả hai nhưng status khác nhau
-
-[4] EXCEPTION HANDLING (Xử lý ngoại lệ)
-    Phân loại từng exception:
-    
-    TYPE A — Timing difference (Chênh lệch thời gian):
-      Giao dịch cuối ngày → Gateway ghi ngày T,
-      Internal ghi ngày T+1 do timezone
-      → Không phải lỗi, tự match ngày hôm sau
-    
-    TYPE B — Pending settlement:
-      Giao dịch T đang chờ settle → Chưa có trong bank statement
-      → Theo dõi, expect ngày T+1 hoặc T+2
-    
-    TYPE C — True exception (Lỗi thật):
-      Amount khác nhau → Điều tra ngay
-      Có ở gateway không có ở internal → Giao dịch "ma"?
-      Có ở internal không có ở gateway → Hệ thống ghi nhận sai?
-
-[5] RESOLUTION (Giải quyết)
-    Mỗi exception có action cụ thể:
-      Giao dịch "ma" → Điều tra fraud team
-      Amount sai → Điều chỉnh kế toán, liên hệ gateway
-      Duplicate → Refund cho user, thu hồi từ merchant
-
-[6] SIGN-OFF (Xác nhận hoàn tất)
-    Manager review và approve
-    Ghi nhận vào hệ thống: "Recon ngày T: BALANCED"
-    Lưu report + evidence
-```
-
-### 3.4 Data Model — Reconciliation System
-
-```sql
--- Recon Run: Một lần chạy đối soát
-CREATE TABLE recon_runs (
-    id              UUID PRIMARY KEY,
-    recon_type      VARCHAR(50) NOT NULL,
-    -- settlement | internal_ledger | bank_statement | gateway
-    period_date     DATE NOT NULL,
-    source_a        VARCHAR(100) NOT NULL,  -- 'internal'
-    source_b        VARCHAR(100) NOT NULL,  -- 'gateway_vnpay'
-    status          VARCHAR(30) DEFAULT 'pending',
-    -- pending | running | completed | failed | signed_off
-    total_records_a INTEGER,
-    total_records_b INTEGER,
-    matched_count   INTEGER DEFAULT 0,
-    unmatched_count INTEGER DEFAULT 0,
-    total_amount_a  BIGINT,
-    total_amount_b  BIGINT,
-    variance_amount BIGINT,  -- A - B
-    run_by          UUID,
-    signed_off_by   UUID,
-    signed_off_at   TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Recon Items: Từng cặp giao dịch được đối chiếu
-CREATE TABLE recon_items (
-    id              UUID PRIMARY KEY,
-    recon_run_id    UUID NOT NULL REFERENCES recon_runs(id),
-    match_status    VARCHAR(30) NOT NULL,
-    -- matched | unmatched_a_only | unmatched_b_only | amount_mismatch | status_mismatch
-
-    -- Source A (internal)
-    internal_txn_id UUID,
-    internal_ref    VARCHAR(255),
-    internal_amount BIGINT,
-    internal_status VARCHAR(30),
-    internal_date   TIMESTAMPTZ,
-
-    -- Source B (external)
-    external_ref    VARCHAR(255),
-    external_amount BIGINT,
-    external_status VARCHAR(30),
-    external_date   TIMESTAMPTZ,
-    external_fee    BIGINT,
-
-    -- Variance
-    amount_variance BIGINT,  -- internal_amount - external_amount
-
-    -- Resolution
-    resolution_status VARCHAR(30) DEFAULT 'open',
-    -- open | investigating | resolved | accepted_variance
-    resolution_note TEXT,
-    resolved_by     UUID,
-    resolved_at     TIMESTAMPTZ,
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
-### 3.5 Reconciliation Dashboard — Những gì cần monitor
-
-```
-DAILY RECON DASHBOARD — 01/12/2024
-────────────────────────────────────────────────────────
-SETTLEMENT RECONCILIATION:
-  Transactions processed:     2,847
-  Matched:                    2,831  (99.4%) ✓
-  Unmatched:                     16  (0.6%)
-    - Amount mismatch:              8
-    - Internal only:                5
-    - External only:                3
-
-  Total Amount (Internal):    892,450,000đ
-  Total Amount (Gateway):     892,437,500đ
-  Variance:                    12,500đ ⚠️
-
-ACTION REQUIRED:
-  [URGENT] 3 transactions có trong gateway, không có internal
-  → Có thể mất ghi nhận giao dịch — điều tra ngay
-  
-  [NORMAL] 8 amount mismatch — likely FX rounding
-  → Review và accept nếu < 1,000đ/giao dịch
-────────────────────────────────────────────────────────
-```
-
----
-
-## PHẦN 4: LENDING & BNPL
-
-### 4.1 Lending là gì trong Fintech?
-
-**Lending (Cho vay)** là hoạt động cung cấp tiền cho người đi vay với điều kiện **hoàn trả gốc + lãi** theo thời hạn thỏa thuận.
-
-**Tại sao Lending là core business của Fintech?**
-
-```
-Net Interest Margin (NIM):
-  Lãi suất cho vay:  15%/năm
-  Chi phí vốn:        5%/năm (lãi suất huy động)
-  NIM:               10%/năm → Đây là lợi nhuận cốt lõi
-
-So sánh với Payment:
-  MDR Payment: 1.5% một lần trên giao dịch
-  Lending: 15%/năm liên tục → Profitable hơn nhiều
-  
-→ Mọi nền tảng Fintech lớn đều hướng đến Lending
-```
-
-### 4.2 Các loại Lending trong Fintech
-
-#### Consumer Lending (Vay tiêu dùng cá nhân)
-
-```
-Đặc điểm:
-  Người vay: Cá nhân
-  Mục đích: Mua sắm, sửa nhà, chi tiêu cá nhân
-  Số tiền: 1tr – 100tr VND
-  Kỳ hạn: 3 – 36 tháng
-  Lãi suất: 15 – 50%/năm (tùy rủi ro)
-  
-Ví dụ: FE Credit, Home Credit, MCredit, Vay qua Momo
-```
-
-#### SME Lending (Vay doanh nghiệp vừa và nhỏ)
-
-```
-Đặc điểm:
-  Người vay: Doanh nghiệp SME
-  Mục đích: Vốn lưu động, mua hàng tồn kho, mở rộng
-  Số tiền: 50tr – 5 tỷ VND
-  Kỳ hạn: 3 – 24 tháng
-  Tài sản đảm bảo: Hàng tồn kho, công nợ, TSCĐ (hoặc tín chấp)
-  
-Ví dụ: Funding Societies, Validus, KiotViet Capital
-```
-
-#### Embedded Lending (Vay nhúng vào sản phẩm khác)
-
-```
-Đặc điểm:
-  Vay ngay tại điểm mua hàng hoặc trong app
-  Không cần đến ngân hàng
-  Quyết định trong vài giây đến vài phút
-  
-Ví dụ:
-  Mua hàng trên Shopee → ShopeePayLater
-  Đặt đồ ăn Grab → GrabPaylater
-  Merchant dùng VNPAY → Vay vốn lưu động ngay trên dashboard
-```
-
-### 4.3 BNPL — Buy Now Pay Later
-
-**BNPL** là một dạng tín dụng ngắn hạn cho phép người mua **chia nhỏ thanh toán** thành nhiều đợt, thường không tính lãi (hoặc lãi rất thấp) nếu trả đúng hạn.
-
-**Tại sao BNPL bùng nổ?**
-
-```
-Góc độ Người mua:
-  - Không cần thẻ tín dụng
-  - Không cần chứng minh thu nhập phức tạp
-  - Phê duyệt trong vài giây
-  - Không lãi nếu trả đúng hạn
-
-Góc độ Merchant:
-  - Tăng conversion rate (khách dám mua hàng giá cao hơn)
-  - Tăng AOV (Average Order Value)
-  - BNPL provider chịu rủi ro tín dụng, không phải merchant
-
-Góc độ BNPL Provider:
-  - Thu MDR từ merchant (thường 3-8%, cao hơn thẻ)
-  - Thu lãi phạt nếu user trả trễ
-  - Thu subscription fee (một số mô hình)
-```
-
-**Các mô hình BNPL phổ biến:**
-
-```
-PAY IN 4 (Trả 4 lần):
-  Mua hàng 1,200,000đ
-  Trả ngay:          300,000đ (25%)
-  Trả sau 2 tuần:    300,000đ
-  Trả sau 4 tuần:    300,000đ
-  Trả sau 6 tuần:    300,000đ
-  Không lãi nếu đúng hạn
-
-PAY LATER (Trả sau 30 ngày):
-  Mua hàng → Trả toàn bộ sau 30 ngày
-  Không lãi trong 30 ngày
-  Quá hạn: lãi phạt ~2-3%/tháng
-
-INSTALLMENT (Trả góp có lãi):
-  Mua hàng 10,000,000đ
-  Trả góp 6 tháng × 1,800,000đ
-  (Bao gồm lãi suất 15%/năm)
-```
-
-### 4.4 Credit Risk — Đánh giá rủi ro tín dụng
-
-Đây là **core competency** của Lending — quyết định ai được vay, vay bao nhiêu, lãi suất bao nhiêu.
-
-**5C của tín dụng (Khung đánh giá truyền thống):**
-
-```
-CHARACTER (Tính cách, ý chí trả nợ):
-  Lịch sử tín dụng trước đây
-  Đã từng vỡ nợ, nợ xấu?
-  Thời gian quan hệ với tổ chức tín dụng
-  → Nguồn: CIC (Credit Information Center - VN), bureau khác
-
-CAPACITY (Khả năng trả nợ):
-  Thu nhập hàng tháng
-  Tổng nợ hiện tại / Thu nhập (Debt-to-Income ratio)
-  DTI < 40%: Tốt
-  DTI 40-50%: Cảnh báo
-  DTI > 50%: Từ chối
-  → Nguồn: Sao kê ngân hàng, hợp đồng lao động
-
-CAPITAL (Tài sản, vốn):
-  Tổng tài sản của người vay
-  Tiết kiệm, đầu tư, bất động sản
-  → "Nếu mất việc, họ có thể dùng gì để trả?"
-
-COLLATERAL (Tài sản đảm bảo):
-  Tài sản thế chấp (nếu có): nhà, xe, hàng tồn kho
-  LTV (Loan-to-Value): Vay 700tr, nhà 1 tỷ → LTV 70%
-  LTV càng thấp → Càng an toàn
-
-CONDITIONS (Điều kiện bên ngoài):
-  Tình hình kinh tế vĩ mô
-  Ngành nghề của người vay (có rủi ro không?)
-  Mục đích vay
-```
-
-**Credit Scoring trong Fintech hiện đại:**
-
-```
-Dữ liệu truyền thống (Traditional Data):
-  Lịch sử tín dụng CIC
-  Thu nhập, việc làm
-  Tài sản đảm bảo
-
-Alternative Data (Dữ liệu thay thế — Fintech đặc trưng):
-  Lịch sử giao dịch trên ví/app:
-    → Tần suất giao dịch, số tiền, merchant category
-    → "Người này chi tiêu có kiểm soát không?"
-  
-  Lịch sử thanh toán hóa đơn:
-    → Điện, nước, internet — trả đúng hạn không?
-  
-  Social data (nếu cho phép):
-    → Mạng lưới kết nối, thời gian dùng app
-  
-  Merchant data (với SME lending):
-    → Doanh thu POS, lịch sử settlement
-    → "Shop này bán được không?"
-  
-  Device data:
-    → Thiết bị mới hay cũ, thay đổi SIM thường xuyên không?
-
-→ Kết hợp tất cả → Credit Score 300-850 (tương tự FICO)
-→ Score cao → Lãi suất thấp, hạn mức cao
-→ Score thấp → Lãi suất cao, hạn mức thấp, hoặc từ chối
-```
-
-### 4.5 Loan Lifecycle — Vòng đời khoản vay
-
-```
-[1] APPLICATION (Đăng ký vay)
-    User nhập thông tin:
-      Số tiền muốn vay, kỳ hạn, mục đích
-      CCCD/CMND
-      Thông tin việc làm, thu nhập
-    
-    Upload documents:
-      Sao kê ngân hàng 3 tháng
-      Hợp đồng lao động
-      (hoặc eKYC + data từ hệ thống)
-
-[2] UNDERWRITING (Thẩm định)
-    Auto decision (vài giây - vài phút):
-      Credit score check
-      Fraud check (có phải người dùng thật không?)
-      Rule-based: DTI, income threshold
-      ML model scoring
-    
-    Manual review (nếu cần):
-      Hồ sơ không rõ ràng
-      Khoản vay lớn
-      Flag từ fraud detection
-    
-    Kết quả:
-      APPROVED: Số tiền, lãi suất, kỳ hạn được phê duyệt
-      COUNTER-OFFER: Phê duyệt một phần (ít hơn, ngắn hơn)
-      REJECTED: Lý do từ chối
-
-[3] OFFER & ACCEPTANCE (Chào vay & Chấp nhận)
-    Hiển thị loan offer:
-      Số tiền: 5,000,000đ
-      Kỳ hạn: 6 tháng
-      Lãi suất: 18%/năm = 1.5%/tháng
-      Phí giải ngân: 1% = 50,000đ
-      Số tiền nhận thực: 4,950,000đ
-      Lịch trả hàng tháng:
-        Tháng 1: 875,000đ (gốc 833,333 + lãi 75,000 - phí 33,333)
-        ...
-    
-    User ký điện tử hợp đồng (e-signature)
-
-[4] DISBURSEMENT (Giải ngân)
-    Chuyển tiền vào ví hoặc tài khoản ngân hàng
-    Ghi nhận: Khoản vay active
-    Bút toán kế toán:
-      Debit: Loan Receivable (Dư nợ cho vay)   +5,000,000
-      Credit: Funding Account (Nguồn vốn)       -5,000,000
-
-[5] REPAYMENT (Trả nợ)
-    Theo lịch hàng tháng:
-    
-    Trả đúng hạn:
-      Debit: Cash/Wallet (tiền vào)             +875,000
-      Credit: Loan Receivable (giảm gốc)        -833,333
-      Credit: Interest Income (lãi)              -41,667
-                                                (điều chỉnh theo amortization)
-    
-    Trả trễ:
-      Tính thêm late fee
-      Update credit score (negative)
-      Trigger collection process
-
-[6] COLLECTION (Thu hồi nợ xấu)
-    DPD (Days Past Due) — số ngày quá hạn:
-    
-    DPD 1-30:   SMS/app reminder tự động
-    DPD 31-60:  Gọi điện nhắc nhở
-    DPD 61-90:  Cảnh báo chính thức, phí phạt tăng
-    DPD 91-180: Chuyển sang đội thu hồi nợ chuyên nghiệp
-    DPD > 180:  Write-off (xóa nợ khỏi sổ sách), bán nợ cho AMC
-
-[7] CLOSURE (Tất toán)
-    Trả hết gốc + lãi + phí (nếu có)
-    Giải phóng tài sản đảm bảo (nếu có)
-    Update credit history
-    Loan status → CLOSED
-```
-
-### 4.6 Loan Amortization — Tính lịch trả nợ
-
-**Amortization** là bảng tính chi tiết lịch trả nợ hàng kỳ.
-
-```
-Khoản vay: 6,000,000đ, 6 tháng, lãi suất 18%/năm (1.5%/tháng)
-Phương pháp: Equal installment (PMT cố định)
-
-PMT = P × [r(1+r)^n] / [(1+r)^n - 1]
-    = 6,000,000 × [0.015 × 1.015^6] / [1.015^6 - 1]
-    = 6,000,000 × 0.01640 / 0.09344
-    = 1,051,512đ/tháng
-
-AMORTIZATION TABLE:
-Tháng │ PMT       │ Lãi       │ Gốc       │ Dư nợ còn
-──────┼───────────┼───────────┼───────────┼───────────
-0     │           │           │           │ 6,000,000
-1     │ 1,051,512 │    90,000 │   961,512 │ 5,038,488
-2     │ 1,051,512 │    75,577 │   975,935 │ 4,062,553
-3     │ 1,051,512 │    60,938 │   990,574 │ 3,071,979
-4     │ 1,051,512 │    46,080 │ 1,005,432 │ 2,066,547
-5     │ 1,051,512 │    30,998 │ 1,020,514 │ 1,046,033
-6     │ 1,051,512 │    15,690 │ 1,035,822 │       211 (rounding)
-
-Tổng lãi phải trả: 319,283đ
-```
-
-### 4.7 NPL — Non-Performing Loan (Nợ xấu)
-
-```
-Phân loại nợ (theo quy định Việt Nam - Thông tư 11/2021):
-
-Nhóm 1 — Nợ đủ tiêu chuẩn:   DPD 0-10 ngày
-Nhóm 2 — Nợ cần chú ý:        DPD 11-30 ngày
-Nhóm 3 — Nợ dưới tiêu chuẩn:  DPD 31-90 ngày
-Nhóm 4 — Nợ nghi ngờ:         DPD 91-180 ngày
-Nhóm 5 — Nợ có khả năng mất:  DPD > 180 ngày
-
-NPL = Nợ nhóm 3 + 4 + 5
-
-NPL Ratio = Tổng dư nợ xấu / Tổng dư nợ cho vay
-
-NHNN yêu cầu: NPL Ratio < 3%
-Fintech tốt:  NPL Ratio < 5%
-Nguy hiểm:    NPL Ratio > 10%
-```
-
-**Provisioning (Trích lập dự phòng):**
-
-```
-Phải trích lập dự phòng cho từng nhóm nợ:
-
-Nhóm 1: 0%       dự phòng
-Nhóm 2: 5%       dự phòng
-Nhóm 3: 20%      dự phòng
-Nhóm 4: 50%      dự phòng
-Nhóm 5: 100%     dự phòng
+Nguyên nhân:
+  MDR tính theo flat rate vs tiered rate
+  FX conversion spread thay đổi theo thời điểm
+  Phí ẩn: scheme fee, cross-border fee, international fee
+  Gateway charge sai rate so với hợp đồng
 
 Ví dụ:
-  Dư nợ Nhóm 3: 1,000,000đ → Trích 200,000đ dự phòng
-  Dư nợ Nhóm 5: 500,000đ   → Trích 500,000đ dự phòng
+  Expected MDR: 1.5% × 1,000,000đ = 15,000đ
+  Actual charged: 17,500đ
+  Chênh lệch: 2,500đ → Vẻ nhỏ, nhưng × 10,000 giao dịch/ngày
+  = 25,000,000đ/ngày chênh lệch → BIG DEAL
 
-Bút toán:
-  Debit:  Chi phí dự phòng rủi ro tín dụng
-  Credit: Quỹ dự phòng rủi ro tín dụng
+Cách xử lý:
+  Reconcile fee schedule định kỳ với gateway
+  Đặt tolerance level (ví dụ: chấp nhận ±0.01%)
+  Flag và investigate nếu vượt tolerance
 ```
 
-### 4.8 Data Model — Lending System
+**Loại 3: Missing Transaction — Nguy hiểm**
 
-```sql
--- Loan Applications
-CREATE TABLE loan_applications (
-    id                  UUID PRIMARY KEY,
-    application_ref     VARCHAR(100) UNIQUE NOT NULL,
-    applicant_id        UUID NOT NULL,
-    loan_type           VARCHAR(50) NOT NULL,
-    -- consumer | sme | bnpl | revolving
+```
+Scenario A: Có trong Internal, không có ở External
+  → Internal ghi nhận thành công nhưng gateway không có
+  → Khách hàng bị trừ tiền nhưng merchant không nhận được?
+  → Tiền đi đâu?
 
-    -- Requested terms
-    requested_amount    BIGINT NOT NULL,
-    requested_tenure    INTEGER NOT NULL,  -- tháng
-    purpose             VARCHAR(100),
+Scenario B: Có ở External, không có trong Internal
+  → Gateway ghi nhận và settlement đã về
+  → Internal không hề biết giao dịch này tồn tại
+  → Ai nhận tiền này?
 
-    -- Decision
-    status              VARCHAR(30) NOT NULL DEFAULT 'submitted',
-    -- submitted | under_review | approved | counter_offered
-    -- rejected | expired | withdrawn
-    approved_amount     BIGINT,
-    approved_tenure     INTEGER,
-    approved_rate       DECIMAL(8,4),  -- lãi suất %/năm
-    rejection_reason    VARCHAR(255),
+Scenario C: "Ghost transaction" (Giao dịch ma)
+  → Có tiền về từ bank nhưng không khớp với giao dịch nào
+  → Có thể là: nhầm lẫn từ bank, hoặc gian lận từ bên trong
 
-    -- Scoring
-    credit_score        INTEGER,         -- 300-850
-    risk_grade          VARCHAR(5),      -- A, B, C, D, E
-    debt_to_income      DECIMAL(5,4),    -- 0.35 = 35%
+Tất cả 3 scenarios đều phải escalate ngay — không được để qua ngày
+```
 
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    decided_at          TIMESTAMPTZ
-);
+**Loại 4: Duplicate Transaction — Rất nguy hiểm**
 
--- Loans (Active loan contracts)
-CREATE TABLE loans (
-    id                  UUID PRIMARY KEY,
-    loan_ref            VARCHAR(100) UNIQUE NOT NULL,
-    application_id      UUID REFERENCES loan_applications(id),
-    borrower_id         UUID NOT NULL,
+```
+Nguyên nhân phổ biến:
+  Network timeout → Client retry → Hai giao dịch cùng được xử lý
+  Bug trong hệ thống → Double charge
+  Manual error → Nhập tay hai lần
 
-    -- Terms
-    principal_amount    BIGINT NOT NULL,  -- Số tiền vay
-    disbursed_amount    BIGINT NOT NULL,  -- Số tiền giải ngân (sau phí)
-    outstanding_balance BIGINT NOT NULL,  -- Dư nợ hiện tại
-    interest_rate       DECIMAL(8,4) NOT NULL,  -- %/năm
-    tenure_months       INTEGER NOT NULL,
-    disbursed_at        TIMESTAMPTZ,
-    maturity_date       DATE NOT NULL,    -- Ngày đáo hạn
+Hậu quả:
+  User bị charge 2 lần → Khiếu nại → Chargeback
+  Merchant nhận 2 lần nhưng settlement chỉ trả 1 lần → Mất tiền
+  Audit trail sai → Báo cáo tài chính không tin cậy
 
-    -- Status
-    status              VARCHAR(30) NOT NULL DEFAULT 'active',
-    -- active | completed | defaulted | written_off
-    loan_classification INTEGER DEFAULT 1,  -- 1-5 (nhóm nợ)
-    dpd                 INTEGER DEFAULT 0,  -- Days Past Due
+Phòng ngừa:
+  Idempotency key: Mỗi giao dịch có unique key,
+  gọi nhiều lần chỉ process 1 lần
+```
 
-    -- Collection
-    next_due_date       DATE,
-    next_due_amount     BIGINT,
-    total_overdue       BIGINT DEFAULT 0,
+### 3.3 Settlement Reconciliation — Luồng tiền thực tế
 
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+Đây là loại reconciliation phức tạp và quan trọng nhất trong Payment Fintech:
 
--- Repayment Schedule
-CREATE TABLE repayment_schedules (
-    id                  UUID PRIMARY KEY,
-    loan_id             UUID NOT NULL REFERENCES loans(id),
-    installment_no      INTEGER NOT NULL,  -- Kỳ thứ mấy
-    due_date            DATE NOT NULL,
-    principal_amount    BIGINT NOT NULL,
-    interest_amount     BIGINT NOT NULL,
-    total_due           BIGINT NOT NULL,   -- principal + interest
-    paid_amount         BIGINT DEFAULT 0,
-    paid_at             TIMESTAMPTZ,
-    status              VARCHAR(20) DEFAULT 'pending',
-    -- pending | paid | partial | overdue | waived
-    UNIQUE(loan_id, installment_no)
-);
+**Vấn đề cơ bản:**
 
--- Loan Transactions
-CREATE TABLE loan_transactions (
-    id                  UUID PRIMARY KEY,
-    loan_id             UUID NOT NULL REFERENCES loans(id),
-    transaction_type    VARCHAR(50) NOT NULL,
-    -- disbursement | repayment | fee | interest_accrual
-    -- late_fee | waiver | write_off
-    amount              BIGINT NOT NULL,
-    principal_portion   BIGINT DEFAULT 0,
-    interest_portion    BIGINT DEFAULT 0,
-    fee_portion         BIGINT DEFAULT 0,
-    balance_after       BIGINT NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```
+Bạn là Payment Provider. Hôm qua có 5,000 giao dịch:
+  Tổng amount charged:  2,500,000,000đ
+  MDR collected (1.5%):    37,500,000đ
+  Expected settlement:  2,462,500,000đ (trả cho merchant)
+
+Hôm nay ngân hàng chuyển về: 2,461,850,000đ
+
+Chênh lệch: 650,000đ — ở đâu ra?
+
+Bạn PHẢI tìm được:
+  Phí chuyển khoản ngân hàng: 550,000đ (10 lệnh × 55,000đ)
+  2 giao dịch refund phát sinh tối qua: 100,000đ
+  → Giải thích được 650,000đ → BALANCED ✓
+
+Nếu không giải thích được → Vấn đề nghiêm trọng
+```
+
+**Luồng Settlement thực tế của một Payment Provider:**
+
+```
+NGÀY T (Giao dịch xảy ra):
+  ┌─────────────────────────────────────────────────────┐
+  │ 08:00 - 22:00: Giao dịch diễn ra                   │
+  │   Mỗi giao dịch: Ghi nhận internal + notify gateway│
+  │   Gateway: Authorize & capture → Hold tiền          │
+  └─────────────────────────────────────────────────────┘
+                           ↓
+NGÀY T+1 (Settlement processing):
+  ┌─────────────────────────────────────────────────────┐
+  │ 00:00 - 06:00: Batch close                         │
+  │   Gateway gom tất cả giao dịch ngày T               │
+  │   Tính net settlement (gross - fees - refunds)      │
+  │   Gửi settlement file (CSV/SFTP) cho chúng ta       │
+  │                                                      │
+  │ 06:00 - 10:00: Reconciliation team làm việc        │
+  │   Download settlement file từ gateway               │
+  │   Download bank statement                           │
+  │   Match từng giao dịch                              │
+  │   Flag các exceptions                               │
+  │                                                      │
+  │ 10:00 - 14:00: Investigate exceptions              │
+  │   Contact gateway nếu cần                          │
+  │   Escalate các trường hợp nghiêm trọng              │
+  │                                                      │
+  │ 14:00: Settlement release                          │
+  │   Approve các merchant settlement đã reconcile      │
+  │   Initiate bank transfer cho merchant               │
+  └─────────────────────────────────────────────────────┘
+                           ↓
+NGÀY T+2 (Merchant nhận tiền):
+  ┌─────────────────────────────────────────────────────┐
+  │ Merchant nhận tiền vào tài khoản ngân hàng          │
+  │ Merchant tự reconcile: settlement nhận = expected?  │
+  └─────────────────────────────────────────────────────┘
+```
+
+### 3.4 Multi-source Reconciliation — Khi có nhiều gateway
+
+Thực tế, một công ty Fintech thường làm việc với nhiều payment partner cùng lúc:
+
+```
+Một ngày giao dịch điển hình:
+
+VNPay Gateway:     1,200 giao dịch, 450,000,000đ
+Momo:                800 giao dịch, 180,000,000đ
+ZaloPay:             600 giao dịch, 120,000,000đ
+Thẻ Visa/Master:     400 giao dịch, 380,000,000đ
+Chuyển khoản ngân hàng: 200 giao dịch, 120,000,000đ
+─────────────────────────────────────────────────────
+Total:             3,200 giao dịch, 1,250,000,000đ
+
+Vấn đề:
+  Mỗi gateway có settlement time khác nhau (T+1, T+2, weekly)
+  Mỗi gateway có format file khác nhau
+  Mỗi gateway có reference ID format khác nhau
+  Mỗi gateway có fee structure khác nhau
+
+→ Reconciliation team phải master tất cả các format này
+→ Đây là lý do automation và standardization quan trọng
+```
+
+**Exception Categories và SLA xử lý:**
+
+```
+PRIORITY 1 — URGENT (Xử lý trong 2 giờ):
+  Missing funds: Tiền về ngân hàng nhưng không match được giao dịch
+  Duplicate charges: User bị charge 2 lần
+  Amount mismatch > 1,000,000đ: Chênh lệch lớn bất thường
+  → Nguy cơ fraud hoặc system error nghiêm trọng
+
+PRIORITY 2 — HIGH (Xử lý trong ngày):
+  Missing transactions: Có ở internal không có ở gateway (hoặc ngược lại)
+  Amount mismatch 100,000 – 1,000,000đ
+  Settlement delay quá T+3
+  → Cần investigate nhưng không nhất thiết là fraud
+
+PRIORITY 3 — NORMAL (Xử lý trong 3 ngày):
+  Fee discrepancy nhỏ: < 100,000đ
+  Timing difference chưa resolve sau 3 ngày
+  Format inconsistency không ảnh hưởng amount
+  → Thường có giải thích hợp lý, verify và đóng
+
+PRIORITY 4 — LOW (Xử lý trong tuần):
+  Rounding differences: < 1,000đ
+  Known timing patterns: Cuối tuần/lễ
+  → Đánh dấu "accepted variance", không cần action
+```
+
+### 3.5 Reconciliation Failure — Khi mọi thứ sai
+
+**Case study: Synapse collapse (2024)**
+
+Synapse Financial Technologies đã sử dụng phần mềm để theo dõi payments bởi các fintech companies và phân bổ payments một cách phù hợp. Tuy nhiên, sự thất bại của Synapse trong việc thực hiện điều này đúng cách đã dẫn đến khoản thiếu hụt lên đến 95 triệu USD giữa số tiền các ngân hàng đang giữ và số tiền nợ người dùng fintech. Khi Synapse phá sản vào tháng 4/2024, các ngân hàng đối tác không thể xác định số tiền nào đang được giữ thuộc về tổ chức nào.
+
+Đây là hậu quả khi reconciliation bị bỏ qua trong nhiều năm:
+
+```
+Synapse là fintech middleware — kết nối:
+  Fintech apps (Yotta, Juno, etc.) ←→ Synapse ←→ Partner Banks
+
+Mô hình:
+  Fintech app nhận tiền của user
+  → Gửi cho Synapse giữ hộ
+  → Synapse deposit vào nhiều ngân hàng partner khác nhau
+  → Synapse track sổ sách "ai có bao nhiêu tiền ở ngân hàng nào"
+
+Vấn đề:
+  Synapse track sổ sách sai — nhưng không ai biết
+  Fintech apps trust Synapse
+  Ngân hàng partner trust Synapse
+  Không có independent reconciliation nào verify số liệu của Synapse
+
+Khi Synapse sụp đổ:
+  Sổ sách của Synapse: User A có 10,000$
+  Thực tế tại ngân hàng: Chỉ có 9,200$ liên quan đến User A
+  800$ đi đâu? Không ai biết.
+  × 100,000 users → 85 triệu USD "mất tích"
+```
+
+**Bài học business:**
+
+```
+1. Trust nhưng verify — dù là đối tác lớn
+2. Independent reconciliation là bắt buộc, không phải optional
+3. Daily reconciliation, không phải monthly
+4. Audit trail phải immutable — không ai được sửa sau khi ghi
+5. Regulatory oversight là bảo vệ, không phải gánh nặng
 ```
 
 ---
 
-## PHẦN 5: KẾT NỐI CÁC DOMAIN
+## PHẦN 4 — LENDING & BNPL: BUSINESS MODEL THẬT SỰ
 
-### 5.1 Wallet + Lending = Super App
-
-```
-User dùng ví điện tử hàng ngày:
-  → Lịch sử giao dịch → Credit scoring
-  → Score tốt → Offer vay vốn ngay trong app
-  → Giải ngân vào ví → Dùng ví để trả hàng tháng
-  → Repayment history → Tăng credit score
-  → Score cao → Hạn mức vay tăng, lãi suất giảm
-
-Vòng lặp giá trị:
-  Ví → Data → Credit → Loan → Repayment → Better Credit → Better Loan
-```
-
-### 5.2 Merchant + Wallet + Lending = Embedded Finance
+### 4.1 Tại sao Lending là thánh địa của Fintech?
 
 ```
-Merchant dùng Payment terminal của bạn:
-  → Dữ liệu doanh thu hàng ngày
-  → Sau 3 tháng: "Doanh thu ổn định, offer vay 50tr"
-  → Merchant vay → Mua thêm hàng → Doanh thu tăng
-  → Doanh thu tăng → Trả nợ từ settlement tự động
-  → Win-win: Merchant có vốn, Platform có lãi vay
+SO SÁNH MARGIN CÁC DỊCH VỤ FINTECH:
 
-Đây là mô hình đang được: Grab, Shopee, KiotViet, VNPAY áp dụng
+Payment (MDR):            1.5% một lần, mỗi giao dịch
+→ User thanh toán 1tr → Thu 15,000đ → Không cộng dồn
+
+Wallet float income:      6-7%/năm trên số dư
+→ User giữ 1tr trong ví → Thu 60,000-70,000đ/năm
+
+Consumer lending:         15-40%/năm Net Interest Margin
+→ User vay 1tr trong 1 năm → Thu 150,000-400,000đ
+
+→ Lending profitable hơn payment 10-20 lần
+→ Đây là lý do mọi payment company đều muốn làm lending
 ```
 
-### 5.3 Reconciliation kết nối tất cả
+**Nguồn vốn cho vay đến từ đâu?**
 
 ```
-Reconciliation đảm bảo:
+Model 1 — Balance Sheet Lending:
+  Dùng tiền của công ty để cho vay
+  Risk: Công ty chịu toàn bộ rủi ro tín dụng
+  Reward: Giữ 100% interest income
+  Ví dụ: Apple Pay Later (dùng tiền của Apple)
 
-Wallet recon:
-  Mọi thay đổi balance đều có ledger entry tương ứng
-  SUM(user balances) = Float account
+Model 2 — Funding Partner:
+  Hợp tác với ngân hàng/quỹ
+  Fintech: Source loan, underwrite, service
+  Bank: Cung cấp vốn
+  Revenue split: Fintech giữ servicing fee, share interest với bank
+  Ví dụ: MoMo + TPBank cho Laterpay Wallet
+         Shopee + Sea Money
 
-Payment recon:
-  Mọi giao dịch trong hệ thống khớp với gateway
-  Settlement nhận đúng số tiền kỳ vọng
+Model 3 — Securitization:
+  Gom nhiều khoản vay thành pool
+  Bán pool này cho nhà đầu tư dưới dạng ABS (Asset-Backed Securities)
+  Fintech nhận vốn ngay, nhà đầu tư nhận lãi từ pool
+  Ví dụ: Affirm, SoFi (US market)
 
-Lending recon:
-  Dư nợ trong hệ thống = Dư nợ thực tế
-  Tiền repayment nhận đúng, ghi nhận đúng kỳ
-  Trích lập dự phòng đúng theo phân loại nợ
+Model 4 — P2P Lending:
+  Kết nối người vay và người cho vay trực tiếp
+  Fintech: Platform fee + servicing fee
+  Không cần vốn lớn, nhưng risk management phức tạp
+  Việt Nam: Chưa có khung pháp lý chính thức
+```
+
+### 4.2 BNPL — Tại sao nó bùng nổ?
+
+Khối lượng BNPL toàn cầu là 50 tỷ USD năm 2019 và tăng gấp 10 lần lên 500 tỷ USD năm 2024. BNPL kết hợp việc bán một sản phẩm với một khoản vay tiêu dùng. Nó bao gồm ba tính năng được tạo ra bởi tiến bộ công nghệ: cải thiện trải nghiệm người dùng, quy trình cấp vốn nhanh hơn, và khả năng sử dụng dữ liệu số để chấm điểm khách hàng mà không cần điền form phức tạp.
+
+**Ba bên trong BNPL và ai được lợi gì:**
+
+```
+CONSUMER (Người mua):
+  ✓ Mua hàng giá cao ngay, trả dần
+  ✓ Lãi 0% nếu trả đúng hạn (pay-in-4 model)
+  ✓ Không cần thẻ tín dụng
+  ✓ Approval trong giây, không paperwork
+  ✗ Bẫy nợ nếu dùng nhiều BNPL cùng lúc
+
+MERCHANT (Người bán):
+  ✓ Conversion rate tăng 20-30%
+     "Khách hàng dám mua item 2tr vì biết chỉ trả 500k trước"
+  ✓ AOV (Average Order Value) tăng 40-60%
+  ✓ BNPL provider chịu rủi ro tín dụng, không phải merchant
+  ✓ Merchant nhận 100% tiền ngay từ BNPL provider
+  ✗ MDR cao hơn: 3-8% thay vì 1.5% của thẻ
+
+BNPL PROVIDER:
+  Revenue đến từ đâu?
+  → Merchant fee (3-8%): Nguồn thu chính
+  → Late fee: Nhỏ nhưng high-margin
+  → Interest (installment có lãi): 15-30%/năm
+
+  <cite>BNPL providers chủ yếu monetize qua merchant fees, không phải lãi hay phí phạt</cite>
+  <cite>Chỉ 4.1% khoản vay BNPL bị tính late fee, và 1.83% không thu hồi được — nghĩa là 98% được trả đầy đủ</cite>
+```
+
+**Tại sao BNPL lấy được MDR cao hơn thẻ từ merchant?**
+
+```
+BNPL pitch cho merchant:
+  "Thẻ tín dụng MDR 2% → Chỉ làm khách hàng thanh toán dễ hơn"
+  "BNPL MDR 5% → Tăng conversion 30%, tăng AOV 50%"
+
+  Ví dụ cho merchant:
+    100 khách có ý định mua, item 2,000,000đ
+    Không có BNPL: 60 người mua → Revenue 120,000,000đ
+    Có BNPL: 80 người mua (thêm 20 người dám mua vì pay later)
+             → Revenue 160,000,000đ
+
+    Tăng revenue: 40,000,000đ
+    Chi phí BNPL (5%): 8,000,000đ (tính trên 160tr)
+    Chi phí thẻ (2%): 2,400,000đ (tính trên 120tr)
+    Chi phí tăng thêm: 5,600,000đ
+    Net gain từ BNPL: 40,000,000 - 5,600,000 = 34,400,000đ ✓
+
+→ Merchant chấp nhận MDR cao hơn vì ROI rõ ràng
+```
+
+### 4.3 Credit Risk — Bài toán cốt lõi của Lending
+
+**Tại sao traditional bank không làm được điều Fintech làm?**
+
+```
+Truyền thống:
+  Thẩm định khoản vay 2tr → Mất 2 tuần, 5 cuộc gọi, 10 tờ giấy
+  Chi phí thẩm định: ~200,000đ
+  → Không profitable với khoản vay nhỏ
+
+Fintech:
+  Thẩm định khoản vay 2tr → 30 giây, 0 tờ giấy
+  Chi phí thẩm định: ~2,000đ (điện toán đám mây)
+  → Profitable vì chi phí cực thấp
+
+Thế mạnh của Fintech chính là DATA:
+```
+
+**Alternative Data — Tại sao data của ví điện tử là "vàng" để đánh giá tín dụng:**
+
+```
+Ngân hàng truyền thống nhìn vào:
+  Lịch sử tín dụng CIC (chỉ ~40% dân số VN có)
+  Thu nhập (cần chứng minh bằng giấy tờ)
+  Tài sản thế chấp
+  → Loại trừ 60% dân số không có lịch sử tín dụng
+
+MoMo/ZaloPay nhìn vào:
+  BEHAVIORAL DATA:
+    Tần suất thanh toán: "User này dùng ví 15 lần/tháng vs 2 lần/tháng"
+    Merchants thường xuyên: "Siêu thị, cà phê, thuốc" vs "bar, casino"
+    Time pattern: "Thanh toán đúng giờ, không thanh toán lúc 3am"
+    Average transaction size và variance
+    
+  PAYMENT HISTORY:
+    Trả bill điện nước, internet đúng hạn không?
+    Trả nợ bạn bè (P2P) có đúng hẹn không?
+    Lịch sử topup: Đều đặn hay bất thường?
+    
+  SOCIAL SIGNALS:
+    Bao nhiêu người trong network của user?
+    Network của user có ai đang nợ xấu không?
+    
+  DEVICE DATA:
+    Dùng điện thoại mới hay cũ?
+    Thay SIM thường xuyên? (Red flag)
+    Location pattern có consistent không?
+
+→ Từ tất cả data này → Credit score trong vài giây
+→ Score chính xác hơn CIC cho phân khúc thin-file
+```
+
+**Risk-based Pricing — Định giá theo rủi ro:**
+
+```
+Truyền thống: Tất cả mọi người cùng lãi suất
+→ Người rủi ro thấp trợ cấp cho người rủi ro cao
+
+Fintech: Giá theo risk profile
+  Score 800-850 (Low risk):   Lãi suất 9%/năm, hạn mức 10tr
+  Score 700-800 (Medium):     Lãi suất 15%/năm, hạn mức 5tr
+  Score 600-700 (High):       Lãi suất 25%/năm, hạn mức 2tr
+  Score <600:                 Từ chối hoặc lãi suất rất cao
+
+Benefits:
+  → Người tốt được lãi suất tốt (fairness)
+  → Người rủi ro cao vẫn được vay (inclusion)
+  → Provider tối ưu được risk/return
+```
+
+### 4.4 Loan Lifecycle Business View
+
+**Từ góc độ business, một khoản vay đi qua các giai đoạn:**
+
+**Giai đoạn 1: Origination (Tạo khoản vay)**
+
+```
+Mục tiêu business: Approve đúng người, đúng số tiền, đúng lãi suất
+Câu hỏi cần trả lời:
+  "User này có khả năng trả không?" → DTI, income estimation
+  "User này có muốn trả không?" → Character assessment, fraud check
+  "Nếu không trả được, chúng ta mất bao nhiêu?" → LGD (Loss Given Default)
+  "Xác suất default là bao nhiêu?" → PD (Probability of Default)
+
+KPI quan trọng:
+  Approval Rate: % đơn được duyệt / tổng đơn nhận
+  Tốt:  60-70% (không quá chặt, không quá lỏng)
+  
+  Auto-Decision Rate: % đơn được system tự quyết định
+  Tốt: > 85% (ít phải manual review)
+  
+  Application-to-Fund Time: Từ đăng ký đến nhận tiền
+  BNPL target: < 30 giây
+  Personal loan target: < 24 giờ
+```
+
+**Giai đoạn 2: Servicing (Quản lý khoản vay)**
+
+```
+Sau khi giải ngân, việc không kém phần quan trọng:
+
+Billing:    Tính toán đúng số tiền cần trả mỗi kỳ
+            Bao gồm: Gốc + Lãi + Phí phạt (nếu có)
+            
+Payment Collection:
+            Tự động trừ từ ví / tài khoản ngân hàng đã liên kết
+            Reminder trước ngày đến hạn 3 ngày, 1 ngày
+            
+Account Management:
+            Cho phép trả trước (early repayment)
+            Cho phép gia hạn (extension) trong một số trường hợp
+            Điều chỉnh repayment schedule nếu có hardship claim
+
+KPI quan trọng:
+  On-time Payment Rate: % khoản trả đúng hạn
+  Tốt: > 90%
+  
+  Early Repayment Rate: % khách trả trước hạn
+  Cao = Bị mất interest income → Cần xem xét prepayment penalty
+```
+
+**Giai đoạn 3: Collections (Thu hồi nợ quá hạn)**
+
+```
+Đây là giai đoạn tốn kém và nhạy cảm nhất:
+
+DPD 1-10:   Soft reminder — SMS, push notification tự động
+            "Khoản vay của bạn đến hạn, vui lòng thanh toán"
+            Chi phí: Gần bằng 0 (automated)
+            
+DPD 11-30:  Escalated reminder — Gọi điện
+            "Xin chào, chúng tôi muốn hỗ trợ anh/chị..."
+            Có thể đề nghị: Gia hạn thêm 7 ngày, trả tối thiểu
+            Chi phí: Cao hơn (human agent)
+            
+DPD 31-90:  Formal collection
+            Thư chính thức, cảnh báo credit score
+            Đề nghị restructure (giãn nợ)
+            Chi phí: Đáng kể
+            
+DPD 91-180: Third-party collection agency
+            Bán hoặc thuê công ty thu hồi nợ chuyên nghiệp
+            Recovery rate: 40-60%
+            
+DPD > 180:  Write-off
+            Xóa khỏi sổ sách (kế toán)
+            Vẫn có thể cố gắng thu hồi nhưng không kỳ vọng
+            Báo cáo lên CIC → Ảnh hưởng credit history của user
+
+Chú ý: Quy định về đòi nợ rất chặt ở Việt Nam
+  KHÔNG được: Quấy rối, đe dọa, liên hệ người thân không liên quan
+  → Vi phạm → Phạt nặng + Thiệt hại reputation
+```
+
+**Giai đoạn 4: Portfolio Management (Quản lý danh mục)**
+
+```
+Nhìn toàn bộ portfolio, không chỉ từng khoản vay:
+
+Vintage Analysis:
+  Các khoản vay originate tháng 1/2024 → Default rate ra sao sau 6 tháng?
+  So với khoản vay tháng 2/2024?
+  → Phát hiện model drift: "Model scoring đang kém hơn so với trước?"
+
+Concentration Risk:
+  Không nên 80% portfolio là khoản vay ngành X
+  Nếu ngành X gặp khó khăn → Toàn bộ portfolio đều xấu
+  → Diversify theo ngành nghề, địa lý, income segment
+
+Yield Management:
+  Expected yield vs Actual yield
+  "Kỳ vọng thu 15% lãi, thực tế chỉ thu 12% do default cao"
+  → Điều chỉnh lãi suất, acceptance criteria
+```
+
+### 4.5 Các mô hình BNPL — Không phải chỉ một loại
+
+**Pay-in-4 (Trả 4 lần, không lãi)**
+
+```
+Mua 1,200,000đ:
+  Hôm nay:     -300,000đ  (25%)
+  2 tuần sau:  -300,000đ  (25%)
+  4 tuần sau:  -300,000đ  (25%)
+  6 tuần sau:  -300,000đ  (25%)
+
+Revenue model của provider:
+  Thu từ merchant: 5% × 1,200,000 = 60,000đ
+  Chi phí vốn (tự fund 75% trong 6 tuần): ~15,000đ
+  Gross margin: 45,000đ per transaction
+  
+Rủi ro:
+  User không trả kỳ 2,3,4 → Provider lỗ 900,000đ
+  Chỉ sustainable nếu default rate < 5%
+```
+
+**Pay Later 30 days (Trả sau 30 ngày, lãi 0%)**
+
+```
+Mua hàng hôm nay, trả toàn bộ sau 30 ngày.
+Nếu quá hạn: Lãi phạt 2-3%/tháng.
+
+Đây thực chất là interest-free loan 30 ngày
+Revenue đến từ: Merchant fee + Late fee
+
+Use case điển hình:
+  Mua hàng cuối tháng khi chưa nhận lương
+  Chờ đến ngày lương → Trả luôn
+```
+
+**Installment loan có lãi (Trả góp dài hạn)**
+
+```
+Mua điện thoại 15,000,000đ, trả 12 tháng, lãi 18%/năm
+
+Đây là personal loan gắn với điểm mua hàng.
+Revenue model:
+  Interest income 18%/năm = 1,350,000đ lãi + merchant fee
+
+Khác biệt với pay-in-4:
+  - Dài hơn (12 tháng vs 6 tuần)
+  - Có lãi
+  - Cần underwriting kỹ hơn
+  - Regulated như consumer lending thông thường
+```
+
+### 4.6 BNPL cho B2B — Xu hướng mới
+
+B2B BNPL cho phép người mua doanh nghiệp mua hàng hóa hoặc dịch vụ ngay lập tức trong khi trì hoãn thanh toán trong một khoảng thời gian nhất định — thường là 30, 60, hoặc 90 ngày. Không giống tín dụng thương mại truyền thống, B2B BNPL cung cấp phê duyệt nhanh hơn, điều khoản đơn giản hơn, và khả năng tiếp cận cao hơn. BNPL provider trả cho nhà cung cấp ngay lập tức, đảm bảo dòng tiền ngay và loại bỏ độ trễ thanh toán.
+
+```
+Ví dụ thực tế B2B BNPL:
+
+Cửa hàng bán lẻ nhỏ mua hàng từ nhà phân phối:
+  Nhà phân phối: "Tôi cần tiền ngay"
+  Cửa hàng: "Tôi chưa bán được hàng, chưa có tiền"
+  → Vấn đề cổ điển: Cả hai đều kẹt vốn lưu động
+
+B2B BNPL giải quyết:
+  BNPL provider trả nhà phân phối ngay 100%
+  Cửa hàng được NET-30 hoặc NET-60
+  Cửa hàng bán hàng, nhận tiền, rồi trả BNPL provider
+
+Ai kiếm tiền:
+  BNPL provider thu phí từ nhà phân phối (2-5%)
+  Nhà phân phối chấp nhận vì bán được hàng nhanh hơn
+  Cửa hàng có vốn lưu động mà không cần vay ngân hàng
 ```
 
 ---
 
-## PHẦN 6: COMPLIANCE & REGULATION
+## PHẦN 5 — HÀNH TRÌNH TỪ VÍ → SUPER APP → EMBEDDED FINANCE
 
-### 6.1 Khung pháp lý Fintech tại Việt Nam
-
-```
-NHNN (Ngân hàng Nhà nước) quản lý:
-
-Giấy phép cần thiết:
-  Ví điện tử / TGTT:   Nghị định 101/2012 + TT 23/2019
-  Cho vay tiêu dùng:   Thông tư 43/2016 (Công ty tài chính)
-  Cho vay P2P:         Đang sandbox, chưa có khung pháp lý chính thức
-
-Giới hạn Ví điện tử:
-  Số dư tối đa:     100,000,000đ (cá nhân)
-  Tổng GD/tháng:    100,000,000đ (cá nhân chưa xác thực đầy đủ)
-  Nạp/rút:          Phải qua tài khoản ngân hàng chính chủ
-
-AML/CFT Requirements:
-  Báo cáo giao dịch đáng ngờ (STR) → Cục Phòng chống rửa tiền
-  Báo cáo giao dịch tiền mặt lớn (CTR): > 300,000,000đ/ngày
-  Lưu trữ hồ sơ KYC: ít nhất 5 năm sau khi kết thúc quan hệ
-```
-
-### 6.2 AML (Anti-Money Laundering) trong thực tế
+### 5.1 Tại sao mọi Fintech đều đi theo con đường này?
 
 ```
-Các giao dịch cần flag để review:
+GIAI ĐOẠN 1 — Payment:
+  "Chúng tôi giúp bạn thanh toán dễ hơn"
+  Revenue: Transaction fee
+  Problem: Margin quá thấp
 
-STRUCTURING:
-  Nhiều giao dịch nhỏ hơn ngưỡng báo cáo
-  → 5 giao dịch 60tr thay vì 1 giao dịch 300tr
+GIAI ĐOẠN 2 — Wallet:
+  "Chúng tôi giữ tiền của bạn"
+  Revenue: Float income + Transaction fee
+  Problem: Quy định chặt, phải 1:1 coverage
 
-LAYERING:
-  Tiền chuyển qua nhiều tài khoản nhanh chóng
-  → A → B → C → D trong vòng 1 giờ
+GIAI ĐOẠN 3 — Super App:
+  "Chúng tôi là trung tâm tài chính của bạn"
+  Revenue: Lending + Insurance + Investment + ...
+  This is where real money is
 
-UNUSUAL PATTERN:
-  Tài khoản không active đột ngột nhận nhiều tiền
-  Chuyển tiền sang nhiều tài khoản khác nhau ngay sau
+GIAI ĐOẠN 4 — Embedded Finance:
+  "Chúng tôi đưa dịch vụ tài chính vào MỌI nơi"
+  Revenue: B2B fee từ non-financial companies
+  Future state
+```
 
-GEOGRAPHIC RISK:
-  Giao dịch từ/đến các quốc gia trong danh sách FATF
+### 5.2 Data Flywheel — Vòng bánh đà dữ liệu
+
+```
+Đây là competitive moat thực sự của Fintech lớn:
+
+User dùng ví nhiều hơn
+        ↓
+Nhiều data hơn về hành vi
+        ↓
+Credit scoring chính xác hơn
+        ↓
+Offer lending phù hợp hơn
+        ↓
+User vay và trả đúng hạn
+        ↓
+Default rate thấp
+        ↓
+Chi phí vốn thấp hơn
+        ↓
+Lãi suất competitive hơn
+        ↓
+Thu hút thêm user vay
+        ↓ (quay lại đầu)
+
+Kẻ đến sau không thể cạnh tranh vì:
+  - Ít data hơn → Credit model kém hơn
+  - Model kém hơn → Default rate cao hơn
+  - Default rate cao hơn → Chi phí vốn cao hơn
+  - Chi phí vốn cao hơn → Lãi suất cao hơn
+  - Lãi suất cao hơn → Ít user muốn vay
+  → Vòng tròn ngược
 ```
 
 ---
 
-## PHẦN 7: TỔNG KẾT
+## PHẦN 6 — COMPLIANCE & REGULATION: BUSINESS IMPACT
 
-### Mental Model cho Fintech
+### 6.1 Tại sao regulation là business issue, không chỉ là legal issue?
 
 ```
-Fintech = Dùng công nghệ để:
-  1. Di chuyển tiền nhanh hơn, rẻ hơn (Payment/Wallet)
-  2. Cấp phát vốn hiệu quả hơn (Lending)
-  3. Đảm bảo mọi thứ chính xác và tuân thủ (Recon/Compliance)
+Ví dụ thực tế tác động của quy định:
 
-Ba câu hỏi luôn cần hỏi:
-  "Tiền đang ở đâu?" → Wallet/Balance
-  "Tiền có đúng không?" → Reconciliation
-  "Rủi ro là gì?" → Credit Risk/Compliance
+NHNN giới hạn số dư ví: 100 triệu đồng/cá nhân
+→ Tác động: User dùng ví cho đại trà, không thể thay thế hoàn toàn ngân hàng
+→ Strategy implication: Tập trung low-value, high-frequency transactions
+
+NHNN yêu cầu KYC đầy đủ cho giao dịch > 20 triệu:
+→ Tác động: Friction cho user lần đầu giao dịch lớn
+→ Strategy implication: Cải thiện eKYC experience để giảm drop-off
+
+P2P lending sandbox vẫn chưa có khung pháp lý:
+→ Tác động: Không thể scale P2P lending tại VN hợp pháp
+→ Strategy implication: Partner với licensed FIs thay vì direct lending
 ```
 
-### Bảng thuật ngữ tổng hợp
+### 6.2 Regulatory Arbitrage — Cách Fintech vượt qua rào cản
 
-| Thuật ngữ | Ý nghĩa |
+```
+"Nếu không thể làm trực tiếp, hợp tác với người có license"
+
+MoMo + TPBank → Laterpay (BNPL):
+  MoMo: Có data, có user, có distribution
+  TPBank: Có lending license, có vốn
+  → MoMo originate loans, TPBank fund và own the loan
+  → Win-win: MoMo kiếm servicing fee, TPBank kiếm interest
+
+Shopee + SeaBank:
+  Shopee: Có merchant data (biết ai bán tốt, ai bán xấu)
+  SeaBank: Có banking license
+  → Shopee cung cấp data để underwrite merchant loans
+  → SeaBank làm lending chính thức
+
+Embedded Finance model:
+  Non-bank + Licensed bank = Fintech service
+  Ai có data → Ai có license → Deal
+```
+
+---
+
+## PHẦN 7 — MENTAL MODELS CHO FINTECH BUSINESS
+
+### 7.1 Ba câu hỏi luôn phải hỏi
+
+```
+Khi gặp bất kỳ vấn đề nào trong Fintech:
+
+1. "TIỀN ĐANG Ở ĐÂU?"
+   → Trace dòng tiền từ điểm A đến điểm B
+   → Ai đang "giữ" tiền tại mỗi thời điểm
+   → Nếu hệ thống crash lúc này, tiền có bị mất không?
+
+2. "AI CHỊU RỦI RO?"
+   → Credit risk: Ai mất tiền nếu user không trả?
+   → Fraud risk: Ai mất tiền nếu giao dịch là gian lận?
+   → Operational risk: Ai chịu trách nhiệm nếu hệ thống sai?
+   → Regulatory risk: Ai bị phạt nếu vi phạm quy định?
+
+3. "AI KIẾM TIỀN TỪ ĐÂU?"
+   → Transaction fee? Interest? Float? Commission?
+   → Incentive alignment: Ai benefit khi user bị hại?
+   → Sustainable không? Hay đang burn cash?
+```
+
+### 7.2 Các chỉ số business quan trọng nhất
+
+```
+WALLET / PAYMENT:
+  GMV (Gross Merchandise Value):   Tổng giá trị giao dịch
+  TPV (Total Payment Volume):      Tổng volume payment
+  Take Rate:                       Revenue / GMV (thường 0.3-1.5%)
+  Active Users (MAU/DAU):          User thực sự dùng, không chỉ install
+  Transaction per User:            Engagement level
+
+LENDING:
+  AUM / Loan Book:                 Tổng dư nợ đang cho vay
+  NPL Ratio:                       % nợ xấu / tổng dư nợ
+  Net Interest Margin (NIM):       Lãi vay - Chi phí vốn
+  Cost of Risk:                    Chi phí dự phòng / Loan Book
+  Risk-Adjusted Return:            NIM - Cost of Risk
+  CAC (Customer Acquisition Cost): Chi phí để có 1 borrower mới
+  LTV (Lifetime Value):            Tổng thu nhập từ 1 borrower
+
+RECONCILIATION:
+  Match Rate:                      % giao dịch match tự động
+  Exception Rate:                  % cần manual investigation
+  Time-to-Resolve:                 Thời gian giải quyết exception
+  False Positive Rate:             % flag nhầm (không thực sự là lỗi)
+```
+
+---
+
+## Tổng kết — Bức tranh liên kết
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  FINTECH ECOSYSTEM                       │
+│                                                          │
+│  USER DATA (hành vi, giao dịch, lịch sử)               │
+│       ↓              ↓              ↓                   │
+│   WALLET          LENDING        INSURANCE              │
+│  (Low margin)    (High margin)   (Medium margin)        │
+│       ↓              ↓              ↓                   │
+│         RECONCILIATION (đảm bảo tất cả chính xác)      │
+│                        ↓                                │
+│            FINANCIAL REPORTING & COMPLIANCE             │
+│                                                          │
+│  Competitive moat: DATA FLYWHEEL                        │
+│  Nhiều user → Nhiều data → Model tốt hơn →             │
+│  Risk thấp hơn → Lãi suất tốt hơn → Nhiều user hơn    │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Bảng thuật ngữ**
+
+| Thuật ngữ | Ý nghĩa một câu |
 |---|---|
-| **Double-entry** | Mỗi giao dịch có 2 vế: Debit và Credit |
-| **Ledger** | Sổ ghi nhận tất cả entries — immutable |
-| **Float Account** | Tài khoản ngân hàng giữ tiền thật của user |
-| **Available Balance** | Số dư có thể dùng ngay (trừ reserved) |
-| **Race Condition** | Hai request đồng thời gây ra kết quả sai |
-| **Idempotency** | Gọi nhiều lần cho cùng kết quả, không duplicate |
-| **Reconciliation** | Đối soát số liệu giữa các hệ thống |
-| **Variance** | Chênh lệch sau khi đối soát |
+| **GMV / TPV** | Tổng giá trị giao dịch chạy qua hệ thống |
+| **Take Rate** | % doanh thu trên tổng GMV |
+| **Float** | Tiền người dùng gửi vào ví, nằm trong tài khoản ngân hàng của công ty |
+| **Float Income** | Lãi ngân hàng kiếm được từ float |
+| **NIM** | Net Interest Margin — chênh lệch lãi suất cho vay và lãi suất huy động vốn |
+| **Cost of Risk** | Chi phí dự phòng nợ xấu tính theo % loan book |
+| **NPL** | Non-Performing Loan — khoản vay quá hạn > 90 ngày |
 | **DPD** | Days Past Due — số ngày quá hạn |
-| **NPL** | Non-Performing Loan — nợ xấu |
-| **Provisioning** | Trích lập dự phòng rủi ro tín dụng |
-| **Amortization** | Lịch trả nợ chi tiết gốc + lãi từng kỳ |
-| **Credit Score** | Điểm tín dụng đánh giá khả năng trả nợ |
-| **DTI** | Debt-to-Income ratio — tỷ lệ nợ/thu nhập |
-| **LTV** | Loan-to-Value — tỷ lệ vay/tài sản đảm bảo |
-| **BNPL** | Buy Now Pay Later — mua trước trả sau |
-| **NIM** | Net Interest Margin — biên lãi suất ròng |
-| **AML** | Anti-Money Laundering — phòng chống rửa tiền |
-| **KYC/eKYC** | Xác minh danh tính (điện tử) |
-| **STR** | Suspicious Transaction Report — báo cáo giao dịch đáng ngờ |
-| **Write-off** | Xóa nợ khỏi sổ sách khi không thể thu hồi |
-| **Embedded Finance** | Tích hợp dịch vụ tài chính vào sản phẩm phi tài chính |
+| **PD** | Probability of Default — xác suất vỡ nợ |
+| **LGD** | Loss Given Default — % mất mát khi vỡ nợ |
+| **Alternative Data** | Dữ liệu phi truyền thống để đánh giá tín dụng |
+| **Origination** | Giai đoạn tạo khoản vay mới |
+| **Vintage Analysis** | Phân tích performance theo thời điểm originate |
+| **Settlement** | Chuyển tiền thực tế sau khi giao dịch được settle |
+| **Reconciliation** | Đối soát số liệu giữa các hệ thống |
+| **Timing Difference** | Chênh lệch do hai hệ thống ghi nhận khác ngày |
+| **Exception** | Giao dịch không match được tự động, cần xử lý thủ công |
+| **Data Flywheel** | Vòng bánh đà: nhiều user → nhiều data → model tốt hơn → nhiều user hơn |
+| **Embedded Finance** | Đưa dịch vụ tài chính vào các sản phẩm phi tài chính |
+| **Balance Sheet Lending** | Dùng vốn công ty tự cho vay |
+| **Securitization** | Gom các khoản vay thành pool và bán cho nhà đầu tư |
